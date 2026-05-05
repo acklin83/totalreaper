@@ -48,9 +48,9 @@ bool runDumpOsc(int command) {
     if (command != s_dumpId) return false;
     const bool nowOn = !s_dumpToConsole.load();
     s_dumpToConsole.store(nowOn);
-    reaper::log(nowOn
-                ? "[TotalReaper] OSC dump → console ENABLED"
-                : "[TotalReaper] OSC dump → console disabled");
+    reaper::debugLog(nowOn
+                     ? "[TotalReaper] OSC dump → console ENABLED"
+                     : "[TotalReaper] OSC dump → console disabled");
     return true;
 }
 

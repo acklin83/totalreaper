@@ -1,8 +1,12 @@
-// Console.h — Logging helper that writes to REAPER's console window.
+// Console.h — Logging helpers that write to REAPER's console window.
 //
 // `ShowConsoleMsg` is the simplest cross-platform output channel for an
-// extension. Wrap it so call sites can pass std::string and we centralize
-// any future formatting / file logging.
+// extension. Two entry points:
+//   log()      — always prints. Use for errors and direct user-action
+//                feedback (toggle confirmations, test sends).
+//   debugLog() — compiles to a no-op when NDEBUG is defined (Release
+//                builds). Use for startup chatter, traces, and anything
+//                the user did not explicitly ask to see.
 
 #pragma once
 
@@ -24,6 +28,22 @@ inline void log(const char* message) {
         s += '\n';
         ShowConsoleMsg(s.c_str());
     }
+}
+
+inline void debugLog(const std::string& message) {
+#ifndef NDEBUG
+    log(message);
+#else
+    (void)message;
+#endif
+}
+
+inline void debugLog(const char* message) {
+#ifndef NDEBUG
+    log(message);
+#else
+    (void)message;
+#endif
 }
 
 } // namespace totalreaper::reaper

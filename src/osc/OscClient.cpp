@@ -81,7 +81,7 @@ bool Client::connect(const std::string& host, std::uint16_t port) {
 
     host_ = host;
     port_ = port;
-    reaper::log("[OSC] client connected → " + host + ":" + std::to_string(port));
+    reaper::debugLog("[OSC] client connected → " + host + ":" + std::to_string(port));
     return true;
 }
 

@@ -28,9 +28,9 @@ bool runToggleRoutingMirror(int command) {
 
     const bool nowEnabled = !s_surf->isEnabled();
     s_surf->setEnabled(nowEnabled);
-    reaper::log(nowEnabled
-                ? "[TotalReaper] Routing mirror ENABLED — REAPER track faders now drive TotalMix"
-                : "[TotalReaper] Routing mirror DISABLED — TotalMix retains current state");
+    reaper::debugLog(nowEnabled
+                     ? "[TotalReaper] Routing mirror ENABLED — REAPER track faders now drive TotalMix"
+                     : "[TotalReaper] Routing mirror DISABLED — TotalMix retains current state");
     return true;
 }
 

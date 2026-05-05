@@ -120,7 +120,7 @@ bool Server::start(std::uint16_t port, MessageHandler handler) {
 
     running_.store(true);
     thread_ = std::thread(&Server::receiveLoop, this);
-    reaper::log("[OSC] server listening on UDP " + std::to_string(port));
+    reaper::debugLog("[OSC] server listening on UDP " + std::to_string(port));
     return true;
 }
 
@@ -136,7 +136,7 @@ void Server::stop() {
         TR_CLOSE_SOCKET(socket_);
         socket_ = -1;
     }
-    reaper::log("[OSC] server stopped");
+    reaper::debugLog("[OSC] server stopped");
 }
 
 void Server::receiveLoop() {
