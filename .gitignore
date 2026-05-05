@@ -1,0 +1,88 @@
+# Build directories
+build/
+build-*/
+out/
+cmake-build-*/
+
+# CMake
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+Makefile
+*.cbp
+compile_commands.json
+CTestTestfile.cmake
+_deps/
+
+# Compiled binaries
+*.o
+*.obj
+*.so
+*.dylib
+*.dll
+*.lib
+*.a
+*.exe
+*.pdb
+*.exp
+*.ilk
+*.idb
+*.ipdb
+*.iobj
+
+# IDE — Xcode
+*.xcodeproj/
+xcuserdata/
+*.xcworkspace/
+DerivedData/
+
+# IDE — VSCode
+.vscode/
+*.code-workspace
+
+# IDE — CLion / IntelliJ
+.idea/
+*.iml
+
+# IDE — Visual Studio
+.vs/
+*.vcxproj.user
+*.suo
+*.user
+*.userosscache
+*.sln.docstates
+
+# OS — macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+Icon
+._*
+.Spotlight-V100
+.Trashes
+
+# OS — Windows
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+*.lnk
+
+# OS — Linux
+*~
+.fuse_hidden*
+.directory
+.Trash-*
+
+# Logs and temp
+*.log
+*.tmp
+*.bak
+*.swp
+*.swo
+
+# Python (in case of helper scripts)
+__pycache__/
+*.pyc
+.venv/
+venv/
