@@ -1,21 +1,26 @@
 // TotalReaperCSurf.h — REAPER control surface that mirrors track state to TotalMix.
 //
-// Phase 1.0 behaviour: when a REAPER track has a hardware input assigned and
-// input monitoring is on, mirror the track's fader value to that input's send
-// to the main output bus in TotalMix. When monitoring is off, send the fader
-// to -∞ (we use the fader, not the mute path, because mute is reserved for
-// later user-facing features).
+// What we mirror, while the routing mirror is engaged:
+//   1. Input monitoring → /mix/in/<n>/<main>/fader. The main bus is the
+//      master track's first HW send.
+//   2. Track-to-track sends that eventually reach a hardware output, which
+//      add per-bus routings: /mix/in/<n>/<destbus>/fader. Walks send chains
+//      recursively, multiplying intermediate track faders for post-fader
+//      sends, so Track A → Track B → Track C (HW out) projects A's input
+//      onto C's bus at gain f_A * sendVol_AB * f_B * sendVol_BC.
 //
-// Hooked callbacks:
-//   - SetSurfaceVolume: fires on every fader move, tiny user latency.
-//   - Extended(CSURF_EXT_SETINPUTMONITOR): fires on monitor toggle.
+// We do NOT mirror destination track faders to TotalMix output bus volumes —
+// those are user/external-controller territory (e.g. more_me.html).
 //
-// Limitations (Phase 1.0):
+// Hooked callbacks: SetSurfaceVolume, Extended(CSURF_EXT_SETINPUTMONITOR),
+// plus a 30 Hz Run() poll that catches changes other surfaces (UF8,
+// automation, scripts) don't propagate to us.
+//
+// Limitations:
 //   - Hardware inputs only — mono and stereo. MIDI inputs (bit 4096) and
 //     multichannel inputs (bit 2048) are ignored.
-//   - The destination bus in TotalMix is derived from the REAPER master
-//     track's first hardware send (its I_DSTCHAN). If the master has no HW
-//     send, falls back to bus 0.
+//   - Send pan only uses the first send in the chain (closest to source).
+//     Multi-hop pan composition is not modelled.
 
 #pragma once
 
@@ -25,6 +30,7 @@
 
 #include <cstdint>
 #include <unordered_map>
+#include <vector>
 
 namespace totalreaper::csurf {
 
@@ -65,19 +71,29 @@ private:
     // the B_MAINSEND override.
     void updateTrackRouting(MediaTrack* tr);
 
-    // Send the fader value to TotalMix for every channel of a given
-    // I_RECINPUT — one message for mono, two for stereo (left + right).
-    // Skips MIDI and multichannel inputs.
-    void sendFaderForInput(int recInput, float db);
+    // Push a fader value (+ optional balpans) for an entire I_RECINPUT to
+    // a specific bus. Splits stereo inputs into left/right channels.
+    // panL == panR == NaN_marker means "don't touch balpan".
+    void pushInputRouting(int recInput, int bus, float db,
+                          float panL, float panR, bool sendPan);
 
-    // Low-level: send a single fader OSC message for one device channel.
-    // Applies the reaper.ini input alias translation. The bus is resolved
-    // from the REAPER master track on each call.
-    void sendFader(int reaperChannel, float db);
+    // Low-level: send a single fader OSC message for one device channel on
+    // a specific bus. Applies the reaper.ini input alias translation.
+    void sendFader(int reaperChannel, int bus, float db);
 
     // Low-level: send a pan/balance OSC message (-1.0 hard left … +1.0 hard
-    // right) to one device channel's send-to-Main routing.
-    void sendBalpan(int reaperChannel, float balpan);
+    // right) for one device channel on a specific bus.
+    void sendBalpan(int reaperChannel, int bus, float balpan);
+
+    // One TotalMix routing this track currently drives (besides the main
+    // bus). Cached so we know what to close out when a routing disappears.
+    struct CachedRouting {
+        int bus = -1;
+        float db = 0.0f;
+        float panL = 0.0f;
+        float panR = 0.0f;
+        bool hasPan = false;
+    };
 
     // Per-track state cache so Run() can detect changes and avoid re-sending
     // identical values every tick.
@@ -95,6 +111,11 @@ private:
         // Overriding silences REAPER's software monitor so the user doesn't
         // hear the input doubled (TotalMix direct + REAPER through-the-DAW).
         int savedMainSend = -1;
+
+        // Routings to non-main buses, derived from this track's audio sends.
+        // Recomputed every processTrack call; entries no longer present get
+        // closed out (push -∞) and removed.
+        std::vector<CachedRouting> sendRoutings;
     };
     std::unordered_map<MediaTrack*, TrackState> states_;
 

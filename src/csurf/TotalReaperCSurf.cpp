@@ -10,7 +10,9 @@
 #include "reaper_plugin_functions.h"
 
 #include <cmath>
+#include <cstdint>
 #include <cstdio>
+#include <unordered_set>
 
 namespace totalreaper::csurf {
 
@@ -41,19 +43,103 @@ bool isStereoInput(int recInput) {
     return (recInput & kRecInputStereo) != 0;
 }
 
-// Find the REAPER master track's first hardware-output destination channel,
-// translated through the output channel map (reaper.ini [alias_out_*]).
-// Returns -1 if the master has no HW send. The returned value is the
-// device hardware channel index, which equals TotalMix's bus index for
-// /mix/in/<n>/<bus>/...
-int resolveMainBusFromMaster() {
-    MediaTrack* master = GetMasterTrack(nullptr);
-    if (!master) return -1;
-    const int hwSendCount = GetTrackNumSends(master, 1);
+// Find a track's first hardware-output destination, translated through the
+// output channel map (reaper.ini [alias_out_*]). Returns -1 if the track has
+// no HW send. The returned value is the device hardware channel index, which
+// equals TotalMix's bus index for /mix/in/<n>/<bus>/...
+int resolveHwOutBus(MediaTrack* tr) {
+    if (tr == nullptr) return -1;
+    const int hwSendCount = GetTrackNumSends(tr, 1);
     if (hwSendCount <= 0) return -1;
     const int reaperDst = static_cast<int>(
-        GetTrackSendInfo_Value(master, 1, 0, "I_DSTCHAN"));
-    return reaper::reaperOutputToHardware(reaperDst);
+        GetTrackSendInfo_Value(tr, 1, 0, "I_DSTCHAN"));
+    // I_DSTCHAN low 10 bits are the start channel; mask to ignore any
+    // multichannel/stereo-pair flags before passing through the alias map.
+    return reaper::reaperOutputToHardware(reaperDst & 0x3FF);
+}
+
+int resolveMainBusFromMaster() {
+    return resolveHwOutBus(GetMasterTrack(nullptr));
+}
+
+float linToClampedDb(double lin) {
+    if (lin <= 0.0) return kMinusInfDb;
+    float db = static_cast<float>(20.0 * std::log10(lin));
+    if (db > kMaxDb) db = kMaxDb;
+    if (db < kMinusInfDb) db = kMinusInfDb;
+    return db;
+}
+
+// Compute the per-input balpan values from REAPER's pan model. Returns
+// (panL, panR) where panR is meaningful only for stereo inputs.
+struct PanPair { float L; float R; };
+PanPair computeInputPan(int recInput, double pan, double width,
+                        double dualPanL, double dualPanR, int panMode) {
+    if (!isStereoInput(recInput)) {
+        return {static_cast<float>(pan), 0.0f};
+    }
+    float L, R;
+    if (panMode == 6) {
+        L = static_cast<float>(dualPanL);
+        R = static_cast<float>(dualPanR);
+    } else {
+        const double effectiveWidth = (panMode == 5) ? width : 1.0;
+        L = static_cast<float>(pan - effectiveWidth);
+        R = static_cast<float>(pan + effectiveWidth);
+    }
+    if (L < -1.0f) L = -1.0f; if (L > 1.0f) L = 1.0f;
+    if (R < -1.0f) R = -1.0f; if (R > 1.0f) R = 1.0f;
+    return {L, R};
+}
+
+// Recursively walk a track's audio sends and return every (bus, gain) pair
+// the source's signal eventually reaches via a hardware output. Intermediate
+// track faders are folded into the gain (post-fader sends use trackVol *
+// sendVol; pre-fader uses sendVol). The destination track's own fader is
+// excluded — TotalMix's /output/<bus>/volume stays user-controlled.
+//
+// Pan: we record the pan of the FIRST send in each chain (the closest to the
+// source), since that's where the user typically intends a routing-specific
+// pan. Multi-hop pan composition is not modelled.
+struct WalkRouting { int bus; double linGain; double firstPan; bool firstPanSet; };
+
+void walkSendChain(MediaTrack* sourceTr, MediaTrack* current, double pathLin,
+                   double firstPan, bool firstPanSet,
+                   std::unordered_set<MediaTrack*>& visited,
+                   std::vector<WalkRouting>& out) {
+    if (visited.count(current)) return;
+    visited.insert(current);
+
+    // Terminal: current track has a hardware output (and isn't the source).
+    if (current != sourceTr) {
+        const int hwBus = resolveHwOutBus(current);
+        if (hwBus >= 0) {
+            out.push_back({hwBus, pathLin, firstPan, firstPanSet});
+            visited.erase(current);
+            return;
+        }
+    }
+
+    const double currFader = GetMediaTrackInfo_Value(current, "D_VOL");
+    const int sendCount = GetTrackNumSends(current, 0);
+    for (int i = 0; i < sendCount; ++i) {
+        const bool muted = GetTrackSendInfo_Value(current, 0, i, "B_MUTE") != 0;
+        if (muted) continue;
+        MediaTrack* dest = reinterpret_cast<MediaTrack*>(static_cast<intptr_t>(
+            static_cast<std::int64_t>(GetTrackSendInfo_Value(
+                current, 0, i, "P_DESTTRACK"))));
+        if (dest == nullptr) continue;
+        const double sendVol = GetTrackSendInfo_Value(current, 0, i, "D_VOL");
+        const double sendPan = GetTrackSendInfo_Value(current, 0, i, "D_PAN");
+        const int sendMode = static_cast<int>(
+            GetTrackSendInfo_Value(current, 0, i, "I_SENDMODE"));
+
+        const double outGain = (sendMode == 0) ? currFader * sendVol : sendVol;
+        const double nextLin = pathLin * outGain;
+        const double nextPan = firstPanSet ? firstPan : sendPan;
+        walkSendChain(sourceTr, dest, nextLin, nextPan, true, visited, out);
+    }
+    visited.erase(current);
 }
 
 } // namespace
@@ -68,12 +154,18 @@ void TotalReaperCSurf::setEnabled(bool enabled) {
                 enabled ? "1" : "0", /*persist*/ true);
 
     if (!enabled) {
-        // Drive every previously-mirrored input to -∞ in TotalMix so REAPER
+        // Drive every routing we've ever pushed to -∞ in TotalMix so REAPER
         // stops affecting monitoring, and restore each track's main send so
         // REAPER's own monitoring works again. We use the cached recInput
         // because the track may have been deleted by now.
+        const int mainBus = resolveMainBusFromMaster();
         for (const auto& [tr, state] : states_) {
-            sendFaderForInput(state.recInput, kMinusInfDb);
+            if (mainBus >= 0) {
+                pushInputRouting(state.recInput, mainBus, kMinusInfDb, 0, 0, false);
+            }
+            for (const auto& r : state.sendRoutings) {
+                pushInputRouting(state.recInput, r.bus, kMinusInfDb, 0, 0, false);
+            }
             if (state.savedMainSend != -1) {
                 SetMediaTrackInfo_Value(tr, "B_MAINSEND",
                                         static_cast<double>(state.savedMainSend));
@@ -151,48 +243,52 @@ void TotalReaperCSurf::processTrack(MediaTrack* tr) {
     // an actually-monitoring track is putting there.
     if (!wasTracked && !currActive) return;
 
-    const double linVol = GetMediaTrackInfo_Value(tr, "D_VOL");
-    const double pan = GetMediaTrackInfo_Value(tr, "D_PAN");
-    const double width = GetMediaTrackInfo_Value(tr, "D_WIDTH");
-    const double dualPanL = GetMediaTrackInfo_Value(tr, "D_DUALPANL");
-    const double dualPanR = GetMediaTrackInfo_Value(tr, "D_DUALPANR");
-    const int panMode = static_cast<int>(GetMediaTrackInfo_Value(tr, "I_PANMODE"));
+    // Note: the scalar "no-change" shortcut from earlier versions is gone.
+    // Send routings depend on other tracks' faders / sends, which can change
+    // independently of this track's scalars, so we always re-walk the chain.
+    // updateTrackRouting still avoids redundant pushes per routing via the
+    // cached sendRoutings list.
 
-    if (wasTracked) {
+    if (wasTracked && it->second.recInput != recInput &&
+        hwStartChannel(it->second.recInput) >= 0) {
+        // Input was reassigned — close out everything on the OLD input
+        // (main bus + every cached send routing).
+        const int mainBus = resolveMainBusFromMaster();
         const TrackState& c = it->second;
-        if (c.recInput == recInput && c.recMon == recMon &&
-            c.linVol == linVol && c.pan == pan && c.width == width &&
-            c.dualPanL == dualPanL && c.dualPanR == dualPanR &&
-            c.panMode == panMode) {
-            return;
+        if (mainBus >= 0) {
+            pushInputRouting(c.recInput, mainBus, kMinusInfDb, 0, 0, false);
         }
-        // If the user reassigned the input, close out the old channel(s)
-        // before pushing anything for the new ones.
-        if (c.recInput != recInput && hwStartChannel(c.recInput) >= 0) {
-            sendFaderForInput(c.recInput, kMinusInfDb);
+        for (const auto& r : c.sendRoutings) {
+            pushInputRouting(c.recInput, r.bus, kMinusInfDb, 0, 0, false);
         }
     }
 
     if (currActive) {
         updateTrackRouting(tr);
     } else {
-        // Transition out of active. Drive the channel(s) to -∞ and restore
-        // the track's main send so REAPER's own monitoring works again.
-        if (hwStartChannel(recInput) >= 0) {
-            sendFaderForInput(recInput, kMinusInfDb);
+        // Transition out of active. Drive the channel(s) to -∞ on every bus
+        // we've been pushing to, then restore the track's main send.
+        const int mainBus = resolveMainBusFromMaster();
+        if (hwStartChannel(recInput) >= 0 && mainBus >= 0) {
+            pushInputRouting(recInput, mainBus, kMinusInfDb, 0, 0, false);
         }
-        if (wasTracked && it->second.savedMainSend != -1) {
-            SetMediaTrackInfo_Value(tr, "B_MAINSEND",
-                static_cast<double>(it->second.savedMainSend));
+        if (wasTracked) {
+            for (const auto& r : it->second.sendRoutings) {
+                pushInputRouting(it->second.recInput, r.bus,
+                                 kMinusInfDb, 0, 0, false);
+            }
+            if (it->second.savedMainSend != -1) {
+                SetMediaTrackInfo_Value(tr, "B_MAINSEND",
+                    static_cast<double>(it->second.savedMainSend));
+            }
         }
         states_.erase(tr);
     }
 }
 
 void TotalReaperCSurf::updateTrackRouting(MediaTrack* tr) {
-    // The master track also receives csurf callbacks (volume + monitor) and
-    // returns I_RECINPUT=0 by default — without this guard we'd spuriously
-    // treat master as a recording track on Analog 1.
+    // Master is excluded by processTrack (and fires here only via direct
+    // calls during enable priming, where the caller has already filtered).
     if (!enabled_ || tr == nullptr || tr == GetMasterTrack(nullptr) ||
         client_ == nullptr) {
         return;
@@ -209,19 +305,13 @@ void TotalReaperCSurf::updateTrackRouting(MediaTrack* tr) {
     const double dualPanR = GetMediaTrackInfo_Value(tr, "D_DUALPANR");
     const int panMode = static_cast<int>(GetMediaTrackInfo_Value(tr, "I_PANMODE"));
 
-    float targetDb = kMinusInfDb;
-    if (recMon != 0 && linVol > 0.0) {
-        targetDb = static_cast<float>(20.0 * std::log10(linVol));
-        if (targetDb > kMaxDb) targetDb = kMaxDb;
-        if (targetDb < kMinusInfDb) targetDb = kMinusInfDb;
-    }
+    const float mainDb = (recMon != 0) ? linToClampedDb(linVol) : kMinusInfDb;
+    const bool nowActive = (mainDb > kMinusInfDb);
 
-    // Mute REAPER's software monitor on this track while we're driving its
-    // input from TotalMix. Otherwise the user hears the input twice — once
-    // direct via TotalMix (zero latency) and once through REAPER's master
-    // (with buffer-size latency, causing a comb filter).
+    // Mute REAPER's software monitor while we're driving the channel from
+    // TotalMix — otherwise the user hears the input twice (TotalMix direct +
+    // REAPER through-the-DAW with buffer-size latency = comb filter).
     TrackState& state = states_[tr];
-    const bool nowActive = (targetDb > kMinusInfDb);
     const bool wasOverridden = (state.savedMainSend != -1);
     if (nowActive && !wasOverridden) {
         const int currentMainSend = static_cast<int>(
@@ -236,7 +326,6 @@ void TotalReaperCSurf::updateTrackRouting(MediaTrack* tr) {
         state.savedMainSend = -1;
     }
 
-    // Refresh cache so the various no-change shortcuts catch up.
     state.recInput = recInput;
     state.recMon = recMon;
     state.linVol = linVol;
@@ -246,54 +335,101 @@ void TotalReaperCSurf::updateTrackRouting(MediaTrack* tr) {
     state.dualPanR = dualPanR;
     state.panMode = panMode;
 
-    sendFaderForInput(recInput, targetDb);
+    // Main bus: REAPER's master track HW out.
+    const int mainBus = resolveMainBusFromMaster();
+    if (mainBus >= 0) {
+        const PanPair p = computeInputPan(recInput, pan, width,
+                                          dualPanL, dualPanR, panMode);
+        // Pan only meaningful while monitoring; when we're pushing -∞ we
+        // don't fight any user adjustments to balpan in TotalMix.
+        pushInputRouting(recInput, mainBus, mainDb, p.L, p.R, nowActive);
+    }
 
-    // Pan/width: only meaningful while the channel is actually monitoring.
-    // When inactive (-∞), don't touch TotalMix's pan — the fader silences
-    // the channel anyway, and we don't fight any manual user adjustments
-    // they might have made in TotalMix.
+    // Send routings: walk the source's audio sends to find every HW bus its
+    // signal eventually reaches, with cumulative gain. Diff against cached
+    // routings, push changes, close out routings that no longer apply.
+    std::vector<WalkRouting> walked;
     if (nowActive) {
-        const int leftCh = hwStartChannel(recInput);
+        std::unordered_set<MediaTrack*> visited;
+        walkSendChain(tr, tr, 1.0, 0.0, false, visited, walked);
+    }
+
+    // Convert walked → CachedRouting (db, panL, panR) and push to TotalMix
+    // anything that's new or changed.
+    std::vector<CachedRouting> next;
+    next.reserve(walked.size());
+    for (const auto& w : walked) {
+        if (w.bus == mainBus) continue; // main bus handled above; avoid duplicate
+        CachedRouting r;
+        r.bus = w.bus;
+        r.db = linToClampedDb(w.linGain);
+        r.hasPan = w.firstPanSet;
         if (isStereoInput(recInput)) {
-            float L, R;
-            if (panMode == 6) {
-                // Dual pan: each channel has its own independent pan.
-                L = static_cast<float>(dualPanL);
-                R = static_cast<float>(dualPanR);
-            } else {
-                // Stereo pan (mode 5) gives a width control; balance modes
-                // (0, 3) don't, so we default to full width and let pan act
-                // as a position offset.
-                const double effectiveWidth = (panMode == 5) ? width : 1.0;
-                L = static_cast<float>(pan - effectiveWidth);
-                R = static_cast<float>(pan + effectiveWidth);
-            }
+            // Stereo source on a stereo dest bus: treat the (single) send pan
+            // as a balance offset, full-width by default.
+            const double sp = w.firstPanSet ? w.firstPan : 0.0;
+            float L = static_cast<float>(sp - 1.0);
+            float R = static_cast<float>(sp + 1.0);
             if (L < -1.0f) L = -1.0f; if (L > 1.0f) L = 1.0f;
             if (R < -1.0f) R = -1.0f; if (R > 1.0f) R = 1.0f;
-            sendBalpan(leftCh,     L);
-            sendBalpan(leftCh + 1, R);
+            r.panL = L;
+            r.panR = R;
         } else {
-            sendBalpan(leftCh, static_cast<float>(pan));
+            r.panL = static_cast<float>(w.firstPanSet ? w.firstPan : 0.0);
+            r.panR = 0.0f;
+        }
+        next.push_back(r);
+    }
+
+    // Close out routings that disappeared between cache and current.
+    for (const auto& cached : state.sendRoutings) {
+        const bool stillPresent = [&] {
+            for (const auto& n : next) if (n.bus == cached.bus) return true;
+            return false;
+        }();
+        if (!stillPresent) {
+            pushInputRouting(recInput, cached.bus, kMinusInfDb, 0, 0, false);
+        }
+    }
+
+    // Push current set: new entries OR entries with changed values.
+    for (const auto& r : next) {
+        const CachedRouting* prev = nullptr;
+        for (const auto& cached : state.sendRoutings) {
+            if (cached.bus == r.bus) { prev = &cached; break; }
+        }
+        if (prev == nullptr || prev->db != r.db ||
+            prev->panL != r.panL || prev->panR != r.panR ||
+            prev->hasPan != r.hasPan) {
+            pushInputRouting(recInput, r.bus, r.db, r.panL, r.panR, r.hasPan);
+        }
+    }
+
+    state.sendRoutings = std::move(next);
+}
+
+void TotalReaperCSurf::pushInputRouting(int recInput, int bus, float db,
+                                        float panL, float panR, bool sendPan) {
+    const int leftCh = hwStartChannel(recInput);
+    if (leftCh < 0 || bus < 0) return;
+    sendFader(leftCh, bus, db);
+    const bool stereo = isStereoInput(recInput);
+    if (stereo) {
+        sendFader(leftCh + 1, bus, db);
+    }
+    if (sendPan) {
+        sendBalpan(leftCh, bus, panL);
+        if (stereo) {
+            sendBalpan(leftCh + 1, bus, panR);
         }
     }
 }
 
-void TotalReaperCSurf::sendFaderForInput(int recInput, float db) {
-    const int leftCh = hwStartChannel(recInput);
-    if (leftCh < 0) return;
-    sendFader(leftCh, db);
-    if (isStereoInput(recInput)) {
-        sendFader(leftCh + 1, db);
-    }
-}
-
-void TotalReaperCSurf::sendFader(int reaperChannel, float db) {
-    if (client_ == nullptr) return;
+void TotalReaperCSurf::sendFader(int reaperChannel, int bus, float db) {
+    if (client_ == nullptr || bus < 0) return;
     if (reaperChannel < 0 || reaperChannel > kRecInputChannelMask) return;
 
     const int hwIdx = reaper::reaperInputToHardware(reaperChannel);
-    const int mainBus = resolveMainBusFromMaster();
-    const int bus = mainBus >= 0 ? mainBus : 0;
 
     if (!client_->isConnected()) {
         client_->connect("127.0.0.1", txPort_);
@@ -306,13 +442,11 @@ void TotalReaperCSurf::sendFader(int reaperChannel, float db) {
     client_->send(msg);
 }
 
-void TotalReaperCSurf::sendBalpan(int reaperChannel, float balpan) {
-    if (client_ == nullptr) return;
+void TotalReaperCSurf::sendBalpan(int reaperChannel, int bus, float balpan) {
+    if (client_ == nullptr || bus < 0) return;
     if (reaperChannel < 0 || reaperChannel > kRecInputChannelMask) return;
 
     const int hwIdx = reaper::reaperInputToHardware(reaperChannel);
-    const int mainBus = resolveMainBusFromMaster();
-    const int bus = mainBus >= 0 ? mainBus : 0;
 
     if (!client_->isConnected()) {
         client_->connect("127.0.0.1", txPort_);
