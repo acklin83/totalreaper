@@ -64,6 +64,8 @@ TotalReaperCSurf::TotalReaperCSurf(osc::Client* client, std::uint16_t txPort)
 void TotalReaperCSurf::setEnabled(bool enabled) {
     if (enabled == enabled_) return;
     enabled_ = enabled;
+    SetExtState("TotalReaper", "RoutingMirrorEnabled",
+                enabled ? "1" : "0", /*persist*/ true);
 
     if (!enabled) {
         // Drive every previously-mirrored input to -∞ in TotalMix so REAPER
@@ -104,11 +106,15 @@ void TotalReaperCSurf::SetSurfaceVolume(MediaTrack* tr, double volume) {
     // we're already tracking (i.e. that have been seen active) — otherwise
     // a default-input-but-monitor-off track would push -∞ here on its first
     // heartbeat, overwriting whatever's currently driving that channel.
+    //
+    // Important: don't write cached.linVol here. processTrack does its own
+    // change detection by re-reading D_VOL and comparing against the cache;
+    // priming linVol up front would mask the change and processTrack would
+    // skip the update.
     if (!enabled_ || tr == nullptr) return;
     auto it = states_.find(tr);
     if (it == states_.end()) return;
     if (it->second.linVol == volume) return;
-    it->second.linVol = volume;
     processTrack(tr);
 }
 

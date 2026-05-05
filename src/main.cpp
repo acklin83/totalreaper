@@ -132,6 +132,15 @@ REAPER_PLUGIN_DLL_EXPORT int ReaperPluginEntry(REAPER_PLUGIN_HINSTANCE /*hInstan
     rec->Register("hookcommand2", reinterpret_cast<void*>(onAction2));
     rec->Register("toggleaction", reinterpret_cast<void*>(onToggleAction));
 
+    // Restore the routing mirror's persisted on/off state so the user's
+    // last choice survives REAPER restarts.
+    if (HasExtState("TotalReaper", "RoutingMirrorEnabled")) {
+        const char* v = GetExtState("TotalReaper", "RoutingMirrorEnabled");
+        if (v && v[0] == '1') {
+            g_csurf->setEnabled(true);
+        }
+    }
+
     totalreaper::reaper::log("[TotalReaper] v0.1.0 loaded — "
                              "find actions in Action List by typing 'TotalReaper'");
     return 1;
