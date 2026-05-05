@@ -81,10 +81,23 @@ target_include_directories(reaper_totalreaper SYSTEM PRIVATE
 
 # Platform-specific networking and naming
 if(APPLE)
+    # REAPER's plugin loader on macOS expects an arch suffix unless the dylib
+    # is a universal binary. Match REAPER's own convention used by SWS, ImGui,
+    # ReaPack etc. ("reaper_<name>-arm64.dylib" / "-x86_64.dylib").
+    if(CMAKE_OSX_ARCHITECTURES)
+        list(LENGTH CMAKE_OSX_ARCHITECTURES _osx_arch_count)
+        if(_osx_arch_count GREATER 1)
+            set(_arch_suffix "")  # universal binary
+        else()
+            set(_arch_suffix "-${CMAKE_OSX_ARCHITECTURES}")
+        endif()
+    else()
+        set(_arch_suffix "-${CMAKE_HOST_SYSTEM_PROCESSOR}")
+    endif()
     set_target_properties(reaper_totalreaper PROPERTIES
         PREFIX ""
         SUFFIX ".dylib"
-        OUTPUT_NAME "reaper_totalreaper"
+        OUTPUT_NAME "reaper_totalreaper${_arch_suffix}"
     )
 elseif(WIN32)
     set_target_properties(reaper_totalreaper PROPERTIES
