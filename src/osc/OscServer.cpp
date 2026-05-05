@@ -46,6 +46,34 @@ bool setRecvTimeout(int sock, int millis) {
 
 constexpr std::size_t kRecvBufferSize = 64 * 1024; // OSC messages can be large
 
+// Dispatch a raw OSC packet — either a single message or a bundle. Bundles
+// nest (#bundle marker + timetag + repeated <int32 size BE><element>), and
+// each element is itself a packet, so we recurse. TotalMix wraps essentially
+// all of its outbound traffic in bundles, so this is the hot path.
+void dispatchPacket(const std::uint8_t* data,
+                    std::size_t size,
+                    const MessageHandler& handler) {
+    if (size >= 8 && std::memcmp(data, "#bundle\0", 8) == 0) {
+        // Skip bundle header (8) + timetag (8). Then iterate elements.
+        std::size_t offset = 16;
+        while (offset + 4 <= size) {
+            std::uint32_t elementSize = 0;
+            std::memcpy(&elementSize, data + offset, 4);
+            elementSize = ntohl(elementSize);
+            offset += 4;
+            if (elementSize == 0 || offset + elementSize > size) break;
+            dispatchPacket(data + offset, elementSize, handler);
+            offset += elementSize;
+        }
+        return;
+    }
+
+    Message message;
+    if (Message::decode(data, size, message) && handler) {
+        handler(message);
+    }
+}
+
 } // namespace
 
 Server::Server() = default;
@@ -132,23 +160,9 @@ void Server::receiveLoop() {
             continue;
         }
 
-        // TotalMix Alpha 4 sends some packets as bundles (e.g. /status/*).
-        // We currently parse only single messages; bundles start with the
-        // string "#bundle\0". Skip those silently for now and revisit when
-        // we need /status/* parsing.
-        if (received >= 8 &&
-            std::memcmp(buffer.data(), "#bundle\0", 8) == 0) {
-            continue;
-        }
-
-        Message message;
-        if (Message::decode(buffer.data(),
-                            static_cast<std::size_t>(received),
-                            message)) {
-            if (handler_) {
-                handler_(message);
-            }
-        }
+        dispatchPacket(buffer.data(),
+                       static_cast<std::size_t>(received),
+                       handler_);
     }
 }
 

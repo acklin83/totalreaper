@@ -25,9 +25,11 @@ namespace {
 std::unique_ptr<totalreaper::osc::Client> g_client;
 std::unique_ptr<totalreaper::osc::Server> g_server;
 
-// REAPER calls this for every action triggered while the extension is
-// loaded. We filter for our command IDs and dispatch to the action handler.
-bool onAction(int command, int /*flag*/) {
+// hookcommand2 is required for actions registered via "custom_action" (per
+// REAPER SDK reaper_plugin.h). Old "hookcommand" only fires for built-in /
+// gaccel actions and never sees our custom command IDs.
+bool onAction2(KbdSectionInfo* /*sec*/, int command, int /*val*/, int /*val2*/,
+               int /*relmode*/, HWND /*hwnd*/) {
     if (totalreaper::actions::runDumpOsc(command)) return true;
     if (totalreaper::actions::runTestSend(command)) return true;
     return false;
@@ -90,8 +92,8 @@ REAPER_PLUGIN_DLL_EXPORT int ReaperPluginEntry(REAPER_PLUGIN_HINSTANCE /*hInstan
                    "TotalReaper: Send Test Mute Input 1",
                    totalreaper::actions::testSendCommandId());
 
-    // Hook the dispatcher
-    rec->Register("hookcommand", reinterpret_cast<void*>(onAction));
+    // hookcommand2 (not hookcommand) — required for custom_action IDs.
+    rec->Register("hookcommand2", reinterpret_cast<void*>(onAction2));
 
     totalreaper::reaper::log("[TotalReaper] v0.1.0 loaded — "
                              "find actions in Action List by typing 'TotalReaper'");

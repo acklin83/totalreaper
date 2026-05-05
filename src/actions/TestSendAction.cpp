@@ -1,8 +1,9 @@
 // TestSendAction.cpp — Action: "TotalReaper: Send Test Mute Input 1"
 //
-// Sends a single OSC message — `/input/1/mute 1.0f` — to TotalMix on the
-// default Global OSC port. If the connection works, Input 1 in TotalMix
-// will mute. Toggle off by running the action a second time (state alternates).
+// Sends a single OSC message — `/input/0/mute 1.0f` — to TotalMix on the
+// default Global OSC port. TotalMix OSC indexes are 0-based, so /input/0
+// addresses what the UI labels as "Analog 1". Toggle off by running the
+// action a second time (state alternates).
 
 #include "Actions.h"
 #include "../osc/OscMessage.h"
@@ -29,7 +30,7 @@ bool runTestSend(int command) {
     }
 
     s_input1Muted = !s_input1Muted;
-    osc::Message message("/input/1/mute");
+    osc::Message message("/input/0/mute");
     message.addFloat(s_input1Muted ? 1.0f : 0.0f);
 
     if (oscClient()->send(message)) {
