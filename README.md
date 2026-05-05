@@ -4,8 +4,11 @@
 
 A REAPER extension that turns RME audio interfaces (UFX+ family) into a
 fully DAW-controlled hardware console. Mic gain, 48V phantom, pad, phase,
-EQ, compressor, submix sends — all driven from REAPER tracks via TotalMix
-FX 2.1's new Global OSC protocol.
+submix sends — all driven from REAPER tracks via TotalMix FX 2.1's new
+Global OSC protocol.
+
+Out of scope: TotalMix-internal effects (channel EQ, dynamics, room EQ,
+FX send/return bus). Those stay in TotalMix.
 
 **Status:** Phase 0 — research and protocol discovery. Not ready for production use.
 
@@ -146,8 +149,7 @@ full plan. Short version:
 - **Phase 0 (now):** Protocol discovery — enumerate Global OSC paths, value ranges, latency
 - **Phase 1:** MVP — track-arm-triggered routing (ADM-style), pre-gain / 48V / pad / phase per track
 - **Phase 2:** Cue mixes via REAPER routing graph, integration with phones.stoersender.ch
-- **Phase 3:** Channel EQ, Comp, FX bus control
-- **Phase 4:** SSL UF8 / UC1 control surface bridge
+- **Phase 3:** SSL UF8 / UC1 control surface bridge
 
 ---
 

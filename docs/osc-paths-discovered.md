@@ -29,15 +29,13 @@ Source: TotalMix FX 2.1 Alpha 4, Global OSC mode, UFX+ in primary slot.
 - Mic gain — path format unknown. Probably `/input/<n>/gain` but TBD.
 - Pad / Hi-Z / Phase invert per channel
 - AUX device pathways (Octamic XTC over MADI / MIDI-over-MADI bridge)
-- Channel EQ (3-band PEQ + LowCut)
-- Channel compressor / expander
-- FX bus (reverb / delay) sends and parameters
 - DURec status and time messages (added in Alpha 4)
+
+TotalMix-internal effects (channel EQ, dynamics, room EQ, FX send/return)
+are explicitly out of scope and are not catalogued here.
 
 ## Open questions
 
 - **Heartbeat:** `/status/*` arrives in bundles — current OSC server
   silently skips bundles. Need to add bundle parsing to monitor connection
   health. See forum thread 43075, posts 15–18.
-- **Reverb/FX preset recall** — feature request 30.04.2026 (forum post),
-  not yet implemented in Alpha 4.
