@@ -11,7 +11,8 @@
 //   - Extended(CSURF_EXT_SETINPUTMONITOR): fires on monitor toggle.
 //
 // Limitations (Phase 1.0):
-//   - Mono hardware inputs only (I_RECINPUT in 0..1023). Stereo / MIDI ignored.
+//   - Hardware inputs only — mono and stereo. MIDI inputs (bit 4096) and
+//     multichannel inputs (bit 2048) are ignored.
 //   - The destination bus in TotalMix is derived from the REAPER master
 //     track's first hardware send (its I_DSTCHAN). If the master has no HW
 //     send, falls back to bus 0.
@@ -54,12 +55,19 @@ public:
 private:
     void updateTrackRouting(MediaTrack* tr);
 
-    // Send a single fader-value OSC message. `reaperChannel` is REAPER's
-    // mono input channel index (I_RECINPUT for mono); the function applies
-    // the channel-name-to-hardware translation. The bus is resolved from
-    // REAPER's master track on each call. Used by updateTrackRouting and
-    // also by the close-out paths (input reassignment, toggle off).
+    // Send the fader value to TotalMix for every channel of a given
+    // I_RECINPUT — one message for mono, two for stereo (left + right).
+    // Skips MIDI and multichannel inputs.
+    void sendFaderForInput(int recInput, float db);
+
+    // Low-level: send a single fader OSC message for one device channel.
+    // Applies the reaper.ini input alias translation. The bus is resolved
+    // from the REAPER master track on each call.
     void sendFader(int reaperChannel, float db);
+
+    // Low-level: send a pan/balance OSC message (-1.0 hard left … +1.0 hard
+    // right) to one device channel's send-to-Main routing.
+    void sendBalpan(int reaperChannel, float balpan);
 
     // Per-track state cache so Run() can detect changes and avoid re-sending
     // identical values every tick.
@@ -67,6 +75,11 @@ private:
         int recInput = -2;   // -2 = "never seen" (distinct from -1 = no input)
         int recMon = -1;
         double linVol = -1.0;
+        double pan = 0.0;
+        double width = 1.0;     // stereo pan mode (5)
+        double dualPanL = 0.0;  // dual pan mode (6)
+        double dualPanR = 0.0;
+        int panMode = -1;
         // -1 = we haven't overridden this track's main send. Otherwise the
         // value B_MAINSEND had before we set it to 0 — restored on disengage.
         // Overriding silences REAPER's software monitor so the user doesn't
