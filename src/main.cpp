@@ -10,20 +10,25 @@
 // On unload, tear everything down cleanly.
 
 #include "actions/Actions.h"
+#include "csurf/TotalReaperCSurf.h"
 #include "osc/OscClient.h"
 #include "osc/OscServer.h"
+#include "reaper/ChannelMap.h"
 #include "reaper/Console.h"
 #include "reaper/ReaperAPI.h"
 
 #include "reaper_plugin.h"
 
+#include <cstdint>
 #include <memory>
-#include <string>
 
 namespace {
 
+constexpr std::uint16_t kTotalMixRxPort = 7001;
+
 std::unique_ptr<totalreaper::osc::Client> g_client;
 std::unique_ptr<totalreaper::osc::Server> g_server;
+std::unique_ptr<totalreaper::csurf::TotalReaperCSurf> g_csurf;
 
 // hookcommand2 is required for actions registered via "custom_action" (per
 // REAPER SDK reaper_plugin.h). Old "hookcommand" only fires for built-in /
@@ -32,7 +37,14 @@ bool onAction2(KbdSectionInfo* /*sec*/, int command, int /*val*/, int /*val2*/,
                int /*relmode*/, HWND /*hwnd*/) {
     if (totalreaper::actions::runDumpOsc(command)) return true;
     if (totalreaper::actions::runTestSend(command)) return true;
+    if (totalreaper::actions::runToggleRoutingMirror(command)) return true;
     return false;
+}
+
+// Toggle-state callback — gives REAPER the current on/off state for actions
+// that have one, so the Action List shows a checkmark.
+int onToggleAction(int command) {
+    return totalreaper::actions::toggleActionState(command);
 }
 
 void registerAction(reaper_plugin_info_t* rec,
@@ -62,6 +74,12 @@ REAPER_PLUGIN_DLL_EXPORT int ReaperPluginEntry(REAPER_PLUGIN_HINSTANCE /*hInstan
                                                reaper_plugin_info_t* rec) {
     if (rec == nullptr) {
         // Plugin is being unloaded
+        if (g_csurf) {
+            // REAPER doesn't expose an unregister-by-instance API; the cleanest
+            // we can do on unload is destroy the object. REAPER stops calling
+            // into it once the dylib is unloaded.
+            g_csurf.reset();
+        }
         if (g_server) g_server->stop();
         g_server.reset();
         g_client.reset();
@@ -76,11 +94,25 @@ REAPER_PLUGIN_DLL_EXPORT int ReaperPluginEntry(REAPER_PLUGIN_HINSTANCE /*hInstan
         return 0;
     }
 
-    // Stand up OSC objects (not yet connected)
+    // Load channel mapping table from reaper.ini so we can translate REAPER
+    // input slot indices to device hardware indices (which is what TotalMix
+    // addresses in /mix/in/<n>/<bus>/...).
+    totalreaper::reaper::loadChannelMap();
+
+    // Stand up OSC objects. Connect TX eagerly so the control surface can
+    // start sending updates immediately; receive server stays dormant until
+    // the dump action enables it.
     g_client = std::make_unique<totalreaper::osc::Client>();
+    g_client->connect("127.0.0.1", kTotalMixRxPort);
     g_server = std::make_unique<totalreaper::osc::Server>();
     totalreaper::actions::setOscClient(g_client.get());
     totalreaper::actions::setOscServer(g_server.get());
+
+    // Install the control surface that mirrors REAPER track state to TotalMix.
+    g_csurf = std::make_unique<totalreaper::csurf::TotalReaperCSurf>(
+        g_client.get(), kTotalMixRxPort);
+    rec->Register("csurf_inst", g_csurf.get());
+    totalreaper::actions::setCsurf(g_csurf.get());
 
     // Register actions
     registerAction(rec,
@@ -91,9 +123,14 @@ REAPER_PLUGIN_DLL_EXPORT int ReaperPluginEntry(REAPER_PLUGIN_HINSTANCE /*hInstan
                    "TOTALREAPER_TEST_SEND",
                    "TotalReaper: Send Test Mute Input 1",
                    totalreaper::actions::testSendCommandId());
+    registerAction(rec,
+                   "TOTALREAPER_TOGGLE_ROUTING_MIRROR",
+                   "TotalReaper: Toggle Routing Mirror",
+                   totalreaper::actions::routingMirrorCommandId());
 
     // hookcommand2 (not hookcommand) — required for custom_action IDs.
     rec->Register("hookcommand2", reinterpret_cast<void*>(onAction2));
+    rec->Register("toggleaction", reinterpret_cast<void*>(onToggleAction));
 
     totalreaper::reaper::log("[TotalReaper] v0.1.0 loaded — "
                              "find actions in Action List by typing 'TotalReaper'");

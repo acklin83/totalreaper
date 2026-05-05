@@ -52,8 +52,11 @@ set(SOURCES
     src/osc/OscClient.cpp
     src/osc/OscServer.cpp
     src/reaper/ReaperAPI.cpp
+    src/reaper/ChannelMap.cpp
     src/actions/DumpOscAction.cpp
     src/actions/TestSendAction.cpp
+    src/actions/RoutingMirrorAction.cpp
+    src/csurf/TotalReaperCSurf.cpp
 )
 
 set(HEADERS
@@ -61,8 +64,10 @@ set(HEADERS
     src/osc/OscClient.h
     src/osc/OscServer.h
     src/reaper/ReaperAPI.h
+    src/reaper/ChannelMap.h
     src/reaper/Console.h
     src/actions/Actions.h
+    src/csurf/TotalReaperCSurf.h
 )
 
 # ──────────────────────────────────────────────────────────────────────────────
