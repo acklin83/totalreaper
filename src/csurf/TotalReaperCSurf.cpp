@@ -39,6 +39,46 @@ int resolveMainBusFromMaster() {
 TotalReaperCSurf::TotalReaperCSurf(osc::Client* client, std::uint16_t txPort)
     : client_(client), txPort_(txPort) {}
 
+void TotalReaperCSurf::setEnabled(bool enabled) {
+    if (enabled == enabled_) return;
+    enabled_ = enabled;
+
+    if (!enabled) {
+        // Drive every previously-mirrored input to -∞ in TotalMix so REAPER
+        // stops affecting monitoring. We need to do this BEFORE clearing the
+        // cache because pushFaderToInput depends on the cached hardware
+        // index (the actual track may have been deleted by now, and Run()
+        // wouldn't have a chance to re-read it).
+        const int mainBus = resolveMainBusFromMaster();
+        const int bus = mainBus >= 0 ? mainBus : 0;
+        if (client_ && !client_->isConnected()) {
+            client_->connect("127.0.0.1", txPort_);
+        }
+        for (const auto& [tr, state] : states_) {
+            if (state.recInput < 0 || state.recInput >= kMonoInputMax) continue;
+            const int hwIdx = reaper::reaperInputToHardware(state.recInput);
+            char path[64];
+            std::snprintf(path, sizeof(path), "/mix/in/%d/%d/fader", hwIdx, bus);
+            osc::Message msg(path);
+            msg.addFloat(kMinusInfDb);
+            if (client_) client_->send(msg);
+        }
+        states_.clear();
+        return;
+    }
+
+    // Enabling: prime by pushing every track. Run() would catch up on its
+    // next tick (~33 ms), but doing it eagerly avoids the user-visible lag
+    // between "I enabled the mirror" and "TotalMix actually reflects state."
+    states_.clear();
+    const int trackCount = CountTracks(nullptr);
+    for (int i = 0; i < trackCount; ++i) {
+        MediaTrack* tr = GetTrack(nullptr, i);
+        if (tr == nullptr) continue;
+        updateTrackRouting(tr);
+    }
+}
+
 void TotalReaperCSurf::SetSurfaceVolume(MediaTrack* tr, double volume) {
     // SetSurfaceVolume can fire as a state heartbeat with the same value, so
     // dedupe via the same cache Run() uses to avoid spamming TotalMix.
@@ -74,14 +114,12 @@ void TotalReaperCSurf::Run() {
         const int recMon = static_cast<int>(GetMediaTrackInfo_Value(tr, "I_RECMON"));
         const double linVol = GetMediaTrackInfo_Value(tr, "D_VOL");
 
-        TrackState& cached = states_[tr];
+        const TrackState& cached = states_[tr];
         if (cached.recInput == recInput &&
             cached.recMon == recMon &&
             cached.linVol == linVol) {
             continue;
         }
-        cached = {recInput, recMon, linVol};
-
         updateTrackRouting(tr);
     }
 }
@@ -98,25 +136,25 @@ void TotalReaperCSurf::updateTrackRouting(MediaTrack* tr) {
     const int recInput = static_cast<int>(GetMediaTrackInfo_Value(tr, "I_RECINPUT"));
     if (recInput < 0 || recInput >= kMonoInputMax) return;
 
+    const int recMon = static_cast<int>(GetMediaTrackInfo_Value(tr, "I_RECMON"));
+    const double linVol = GetMediaTrackInfo_Value(tr, "D_VOL");
+
+    // Refresh cache so Run()'s no-change shortcut applies on the next tick
+    // and SetSurfaceVolume's heartbeat dedupe sees the latest value.
+    states_[tr] = {recInput, recMon, linVol};
+
     // REAPER's I_RECINPUT is the user-visible channel slot, which may differ
     // from the device's hardware channel index (and TotalMix's matrix index).
     // Translate via the reaper.ini channel map.
     const int hwIdx = reaper::reaperInputToHardware(recInput);
-
-    const int recMon = static_cast<int>(GetMediaTrackInfo_Value(tr, "I_RECMON"));
-    const bool monitoring = (recMon != 0);
-
     const int mainBus = resolveMainBusFromMaster();
     const int bus = mainBus >= 0 ? mainBus : 0;
 
     float targetDb = kMinusInfDb;
-    if (monitoring) {
-        const double linVol = GetMediaTrackInfo_Value(tr, "D_VOL");
-        if (linVol > 0.0) {
-            targetDb = static_cast<float>(20.0 * std::log10(linVol));
-            if (targetDb > kMaxDb) targetDb = kMaxDb;
-            if (targetDb < kMinusInfDb) targetDb = kMinusInfDb;
-        }
+    if (recMon != 0 && linVol > 0.0) {
+        targetDb = static_cast<float>(20.0 * std::log10(linVol));
+        if (targetDb > kMaxDb) targetDb = kMaxDb;
+        if (targetDb < kMinusInfDb) targetDb = kMinusInfDb;
     }
 
     if (!client_->isConnected()) {

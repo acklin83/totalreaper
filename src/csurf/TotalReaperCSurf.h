@@ -46,9 +46,11 @@ public:
     // scripts) don't always reach SetSurfaceVolume on our instance.
     void Run() override;
 
-    // Master enable/disable. When disabled, callbacks are no-ops; TotalMix
-    // retains whatever fader values were last written.
-    void setEnabled(bool enabled) noexcept { enabled_ = enabled; }
+    // Master enable/disable. Enabling pushes current state of every monitored
+    // track immediately. Disabling drives every previously-mirrored input to
+    // -∞ in TotalMix so REAPER no longer affects monitoring; the user's
+    // pre-engagement TotalMix state is not restored (we don't snapshot).
+    void setEnabled(bool enabled);
     bool isEnabled() const noexcept { return enabled_; }
 
 private:
