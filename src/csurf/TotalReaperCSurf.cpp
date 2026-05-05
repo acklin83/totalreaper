@@ -45,23 +45,10 @@ void TotalReaperCSurf::setEnabled(bool enabled) {
 
     if (!enabled) {
         // Drive every previously-mirrored input to -∞ in TotalMix so REAPER
-        // stops affecting monitoring. We need to do this BEFORE clearing the
-        // cache because pushFaderToInput depends on the cached hardware
-        // index (the actual track may have been deleted by now, and Run()
-        // wouldn't have a chance to re-read it).
-        const int mainBus = resolveMainBusFromMaster();
-        const int bus = mainBus >= 0 ? mainBus : 0;
-        if (client_ && !client_->isConnected()) {
-            client_->connect("127.0.0.1", txPort_);
-        }
+        // stops affecting monitoring. We use the cached recInput (not a fresh
+        // re-read) because the track may have been deleted by now.
         for (const auto& [tr, state] : states_) {
-            if (state.recInput < 0 || state.recInput >= kMonoInputMax) continue;
-            const int hwIdx = reaper::reaperInputToHardware(state.recInput);
-            char path[64];
-            std::snprintf(path, sizeof(path), "/mix/in/%d/%d/fader", hwIdx, bus);
-            osc::Message msg(path);
-            msg.addFloat(kMinusInfDb);
-            if (client_) client_->send(msg);
+            sendFader(state.recInput, kMinusInfDb);
         }
         states_.clear();
         return;
@@ -109,8 +96,6 @@ void TotalReaperCSurf::Run() {
         if (tr == nullptr) continue;
 
         const int recInput = static_cast<int>(GetMediaTrackInfo_Value(tr, "I_RECINPUT"));
-        if (recInput < 0 || recInput >= kMonoInputMax) continue;
-
         const int recMon = static_cast<int>(GetMediaTrackInfo_Value(tr, "I_RECMON"));
         const double linVol = GetMediaTrackInfo_Value(tr, "D_VOL");
 
@@ -120,6 +105,22 @@ void TotalReaperCSurf::Run() {
             cached.linVol == linVol) {
             continue;
         }
+
+        // If the input was reassigned, close out the OLD input first so it
+        // doesn't stay stuck at the last fader value in TotalMix. Then fall
+        // through to the normal update for the new input.
+        if (cached.recInput >= 0 && cached.recInput < kMonoInputMax &&
+            cached.recInput != recInput) {
+            sendFader(cached.recInput, kMinusInfDb);
+        }
+
+        if (recInput < 0 || recInput >= kMonoInputMax) {
+            // No valid mono input now — leave cache reflecting current state
+            // (so we don't re-send the close-out next tick).
+            states_[tr] = {recInput, recMon, linVol};
+            continue;
+        }
+
         updateTrackRouting(tr);
     }
 }
@@ -143,19 +144,23 @@ void TotalReaperCSurf::updateTrackRouting(MediaTrack* tr) {
     // and SetSurfaceVolume's heartbeat dedupe sees the latest value.
     states_[tr] = {recInput, recMon, linVol};
 
-    // REAPER's I_RECINPUT is the user-visible channel slot, which may differ
-    // from the device's hardware channel index (and TotalMix's matrix index).
-    // Translate via the reaper.ini channel map.
-    const int hwIdx = reaper::reaperInputToHardware(recInput);
-    const int mainBus = resolveMainBusFromMaster();
-    const int bus = mainBus >= 0 ? mainBus : 0;
-
     float targetDb = kMinusInfDb;
     if (recMon != 0 && linVol > 0.0) {
         targetDb = static_cast<float>(20.0 * std::log10(linVol));
         if (targetDb > kMaxDb) targetDb = kMaxDb;
         if (targetDb < kMinusInfDb) targetDb = kMinusInfDb;
     }
+
+    sendFader(recInput, targetDb);
+}
+
+void TotalReaperCSurf::sendFader(int reaperChannel, float db) {
+    if (client_ == nullptr) return;
+    if (reaperChannel < 0 || reaperChannel >= kMonoInputMax) return;
+
+    const int hwIdx = reaper::reaperInputToHardware(reaperChannel);
+    const int mainBus = resolveMainBusFromMaster();
+    const int bus = mainBus >= 0 ? mainBus : 0;
 
     if (!client_->isConnected()) {
         client_->connect("127.0.0.1", txPort_);
@@ -164,7 +169,7 @@ void TotalReaperCSurf::updateTrackRouting(MediaTrack* tr) {
     char path[64];
     std::snprintf(path, sizeof(path), "/mix/in/%d/%d/fader", hwIdx, bus);
     osc::Message msg(path);
-    msg.addFloat(targetDb);
+    msg.addFloat(db);
     client_->send(msg);
 }
 

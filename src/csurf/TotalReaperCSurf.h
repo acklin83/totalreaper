@@ -15,8 +15,6 @@
 //   - The destination bus in TotalMix is derived from the REAPER master
 //     track's first hardware send (its I_DSTCHAN). If the master has no HW
 //     send, falls back to bus 0.
-//   - Track input *reassignment* won't trigger an OSC update on its own — the
-//     next volume or monitor change will.
 
 #pragma once
 
@@ -55,6 +53,13 @@ public:
 
 private:
     void updateTrackRouting(MediaTrack* tr);
+
+    // Send a single fader-value OSC message. `reaperChannel` is REAPER's
+    // mono input channel index (I_RECINPUT for mono); the function applies
+    // the channel-name-to-hardware translation. The bus is resolved from
+    // REAPER's master track on each call. Used by updateTrackRouting and
+    // also by the close-out paths (input reassignment, toggle off).
+    void sendFader(int reaperChannel, float db);
 
     // Per-track state cache so Run() can detect changes and avoid re-sending
     // identical values every tick.
