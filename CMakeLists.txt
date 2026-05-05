@@ -114,6 +114,14 @@ elseif(WIN32)
         OUTPUT_NAME "reaper_totalreaper"
     )
     target_link_libraries(reaper_totalreaper PRIVATE ws2_32)
+    # WIN32_LEAN_AND_MEAN tells windows.h (pulled in by the REAPER SDK) NOT
+    # to include winsock.h, so our winsock2.h includes can be the first ones
+    # — without this, winsock1/winsock2 headers redefine each other and the
+    # build fails with hundreds of struct-redefinition errors.
+    target_compile_definitions(reaper_totalreaper PRIVATE
+        WIN32_LEAN_AND_MEAN
+        NOMINMAX
+    )
 elseif(UNIX)
     set_target_properties(reaper_totalreaper PROPERTIES
         PREFIX ""
