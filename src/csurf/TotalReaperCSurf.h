@@ -28,7 +28,9 @@
 
 #include "reaper_plugin.h"
 
+#include <chrono>
 #include <cstdint>
+#include <functional>
 #include <unordered_map>
 #include <vector>
 
@@ -57,6 +59,12 @@ public:
     // pre-engagement TotalMix state is not restored (we don't snapshot).
     void setEnabled(bool enabled);
     bool isEnabled() const noexcept { return enabled_; }
+
+    // Schedule a callback to fire from Run() after `delayMs` milliseconds.
+    // Used for sequencing operations like "mute → toggle pad → unmute" so
+    // a brief audio mute hides hardware pop noise around a pad change.
+    // Fires on REAPER's main thread, so REAPER API calls inside are safe.
+    void scheduleAfter(int delayMs, std::function<void()> action);
 
 private:
     // Reconcile one track's TotalMix routing with its current REAPER state.
@@ -118,6 +126,12 @@ private:
         std::vector<CachedRouting> sendRoutings;
     };
     std::unordered_map<MediaTrack*, TrackState> states_;
+
+    struct Deferred {
+        std::chrono::steady_clock::time_point fireAt;
+        std::function<void()> action;
+    };
+    std::vector<Deferred> deferred_;
 
     osc::Client* client_;
     std::uint16_t txPort_;

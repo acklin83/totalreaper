@@ -38,6 +38,9 @@ int toggleActionState(int command) {
     if (command == s_toggleId && s_surf != nullptr) {
         return s_surf->isEnabled() ? 1 : 0;
     }
+    if (command == dumpOscCommandId()) {
+        return isDumpToConsoleActive() ? 1 : 0;
+    }
     return -1;
 }
 

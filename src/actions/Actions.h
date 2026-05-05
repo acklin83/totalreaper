@@ -9,6 +9,7 @@
 #include "../csurf/TotalReaperCSurf.h"
 #include "../osc/OscClient.h"
 #include "../osc/OscServer.h"
+#include "../osc/TotalMixState.h"
 
 namespace totalreaper::actions {
 
@@ -16,15 +17,25 @@ namespace totalreaper::actions {
 void setOscClient(osc::Client* client);
 void setOscServer(osc::Server* server);
 void setCsurf(csurf::TotalReaperCSurf* surf);
+void setTotalMixState(osc::TotalMixState* state);
 
 osc::Client* oscClient();
 osc::Server* oscServer();
 csurf::TotalReaperCSurf* csurfInstance();
+osc::TotalMixState* totalMixState();
 
 // Action handlers — return true if the command was handled.
 bool runDumpOsc(int command);
 bool runTestSend(int command);
 bool runToggleRoutingMirror(int command);
+bool runPreampAction(int command);
+
+// Receive handler installed by main.cpp on the always-running OSC server.
+// Updates TotalMixState and optionally logs to console.
+void rxHandler(const osc::Message& m);
+
+// True while the dump action is currently toggling console logging on.
+bool isDumpToConsoleActive();
 
 // Toggle-state callback for "toggleaction" registration. Returns 1 if the
 // command's feature is currently on, 0 if off, -1 if the command isn't ours
@@ -36,5 +47,10 @@ int toggleActionState(int command);
 int& dumpOscCommandId();
 int& testSendCommandId();
 int& routingMirrorCommandId();
+int& gainIncCommandId();
+int& gainDecCommandId();
+int& toggle48vCommandId();
+int& togglePadCommandId();
+int& togglePhaseCommandId();
 
 } // namespace totalreaper::actions

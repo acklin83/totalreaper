@@ -51,11 +51,13 @@ set(SOURCES
     src/osc/OscMessage.cpp
     src/osc/OscClient.cpp
     src/osc/OscServer.cpp
+    src/osc/TotalMixState.cpp
     src/reaper/ReaperAPI.cpp
     src/reaper/ChannelMap.cpp
     src/actions/DumpOscAction.cpp
     src/actions/TestSendAction.cpp
     src/actions/RoutingMirrorAction.cpp
+    src/actions/PreampActions.cpp
     src/csurf/TotalReaperCSurf.cpp
 )
 
@@ -63,6 +65,7 @@ set(HEADERS
     src/osc/OscMessage.h
     src/osc/OscClient.h
     src/osc/OscServer.h
+    src/osc/TotalMixState.h
     src/reaper/ReaperAPI.h
     src/reaper/ChannelMap.h
     src/reaper/Console.h

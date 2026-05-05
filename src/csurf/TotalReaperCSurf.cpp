@@ -220,11 +220,34 @@ int TotalReaperCSurf::Extended(int call, void* parm1, void* /*parm2*/,
 }
 
 void TotalReaperCSurf::Run() {
+    // Fire any deferred actions whose time has come, regardless of enabled
+    // state — they were scheduled by code that already gated on enabled.
+    if (!deferred_.empty()) {
+        const auto now = std::chrono::steady_clock::now();
+        for (auto it = deferred_.begin(); it != deferred_.end(); ) {
+            if (it->fireAt <= now) {
+                auto action = std::move(it->action);
+                it = deferred_.erase(it);
+                action();
+            } else {
+                ++it;
+            }
+        }
+    }
+
     if (!enabled_) return;
     const int trackCount = CountTracks(nullptr);
     for (int i = 0; i < trackCount; ++i) {
         processTrack(GetTrack(nullptr, i));
     }
+}
+
+void TotalReaperCSurf::scheduleAfter(int delayMs,
+                                     std::function<void()> action) {
+    deferred_.push_back({
+        std::chrono::steady_clock::now() + std::chrono::milliseconds(delayMs),
+        std::move(action)
+    });
 }
 
 void TotalReaperCSurf::processTrack(MediaTrack* tr) {

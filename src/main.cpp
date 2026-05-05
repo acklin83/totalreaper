@@ -13,6 +13,7 @@
 #include "csurf/TotalReaperCSurf.h"
 #include "osc/OscClient.h"
 #include "osc/OscServer.h"
+#include "osc/TotalMixState.h"
 #include "reaper/ChannelMap.h"
 #include "reaper/Console.h"
 #include "reaper/ReaperAPI.h"
@@ -25,9 +26,11 @@
 namespace {
 
 constexpr std::uint16_t kTotalMixRxPort = 7001;
+constexpr std::uint16_t kTotalReaperListenPort = 7002;
 
 std::unique_ptr<totalreaper::osc::Client> g_client;
 std::unique_ptr<totalreaper::osc::Server> g_server;
+std::unique_ptr<totalreaper::osc::TotalMixState> g_state;
 std::unique_ptr<totalreaper::csurf::TotalReaperCSurf> g_csurf;
 
 // hookcommand2 is required for actions registered via "custom_action" (per
@@ -38,6 +41,7 @@ bool onAction2(KbdSectionInfo* /*sec*/, int command, int /*val*/, int /*val2*/,
     if (totalreaper::actions::runDumpOsc(command)) return true;
     if (totalreaper::actions::runTestSend(command)) return true;
     if (totalreaper::actions::runToggleRoutingMirror(command)) return true;
+    if (totalreaper::actions::runPreampAction(command)) return true;
     return false;
 }
 
@@ -83,6 +87,7 @@ REAPER_PLUGIN_DLL_EXPORT int ReaperPluginEntry(REAPER_PLUGIN_HINSTANCE /*hInstan
         if (g_server) g_server->stop();
         g_server.reset();
         g_client.reset();
+        g_state.reset();
         return 0;
     }
 
@@ -100,13 +105,17 @@ REAPER_PLUGIN_DLL_EXPORT int ReaperPluginEntry(REAPER_PLUGIN_HINSTANCE /*hInstan
     totalreaper::reaper::loadChannelMap();
 
     // Stand up OSC objects. Connect TX eagerly so the control surface can
-    // start sending updates immediately; receive server stays dormant until
-    // the dump action enables it.
+    // start sending updates immediately. The receive server runs from now
+    // on, populating the TotalMix state cache that relative actions (like
+    // preamp gain delta) depend on for an accurate baseline.
     g_client = std::make_unique<totalreaper::osc::Client>();
     g_client->connect("127.0.0.1", kTotalMixRxPort);
     g_server = std::make_unique<totalreaper::osc::Server>();
+    g_state = std::make_unique<totalreaper::osc::TotalMixState>();
     totalreaper::actions::setOscClient(g_client.get());
     totalreaper::actions::setOscServer(g_server.get());
+    totalreaper::actions::setTotalMixState(g_state.get());
+    g_server->start(kTotalReaperListenPort, &totalreaper::actions::rxHandler);
 
     // Install the control surface that mirrors REAPER track state to TotalMix.
     g_csurf = std::make_unique<totalreaper::csurf::TotalReaperCSurf>(
@@ -127,6 +136,27 @@ REAPER_PLUGIN_DLL_EXPORT int ReaperPluginEntry(REAPER_PLUGIN_HINSTANCE /*hInstan
                    "TOTALREAPER_TOGGLE_ROUTING_MIRROR",
                    "TotalReaper: Toggle Routing Mirror",
                    totalreaper::actions::routingMirrorCommandId());
+
+    registerAction(rec,
+                   "TOTALREAPER_GAIN_INC",
+                   "TotalReaper: Increase preamp gain on selected tracks (+1 dB)",
+                   totalreaper::actions::gainIncCommandId());
+    registerAction(rec,
+                   "TOTALREAPER_GAIN_DEC",
+                   "TotalReaper: Decrease preamp gain on selected tracks (-1 dB)",
+                   totalreaper::actions::gainDecCommandId());
+    registerAction(rec,
+                   "TOTALREAPER_TOGGLE_48V",
+                   "TotalReaper: Toggle 48V phantom on selected tracks",
+                   totalreaper::actions::toggle48vCommandId());
+    registerAction(rec,
+                   "TOTALREAPER_TOGGLE_PAD",
+                   "TotalReaper: Toggle pad on selected tracks",
+                   totalreaper::actions::togglePadCommandId());
+    registerAction(rec,
+                   "TOTALREAPER_TOGGLE_PHASE",
+                   "TotalReaper: Toggle phase invert on selected tracks",
+                   totalreaper::actions::togglePhaseCommandId());
 
     // hookcommand2 (not hookcommand) — required for custom_action IDs.
     rec->Register("hookcommand2", reinterpret_cast<void*>(onAction2));
