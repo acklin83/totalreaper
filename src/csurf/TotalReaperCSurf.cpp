@@ -81,34 +81,41 @@ void TotalReaperCSurf::setEnabled(bool enabled) {
         return;
     }
 
-    // Enabling: prime by pushing every track. Run() would catch up on its
-    // next tick (~33 ms), but doing it eagerly avoids the user-visible lag
-    // between "I enabled the mirror" and "TotalMix actually reflects state."
+    // Enabling: prime by pushing every currently-active track. Run() would
+    // catch up on its next tick (~33 ms), but doing it eagerly avoids the
+    // user-visible lag between enabling the mirror and TotalMix reflecting
+    // state. Tracks that aren't actively monitoring (default-input or
+    // explicitly muted-monitor) are left out of the cache so they don't
+    // push spurious -∞ values that overwrite the active tracks.
     states_.clear();
     const int trackCount = CountTracks(nullptr);
     for (int i = 0; i < trackCount; ++i) {
         MediaTrack* tr = GetTrack(nullptr, i);
         if (tr == nullptr) continue;
+        const int recMon = static_cast<int>(GetMediaTrackInfo_Value(tr, "I_RECMON"));
+        const int recInput = static_cast<int>(GetMediaTrackInfo_Value(tr, "I_RECINPUT"));
+        if (recMon == 0 || hwStartChannel(recInput) < 0) continue;
         updateTrackRouting(tr);
     }
 }
 
 void TotalReaperCSurf::SetSurfaceVolume(MediaTrack* tr, double volume) {
-    // SetSurfaceVolume can fire as a state heartbeat with the same value, so
-    // dedupe via the same cache Run() uses to avoid spamming TotalMix.
+    // SetSurfaceVolume can fire as a state heartbeat. Only react for tracks
+    // we're already tracking (i.e. that have been seen active) — otherwise
+    // a default-input-but-monitor-off track would push -∞ here on its first
+    // heartbeat, overwriting whatever's currently driving that channel.
     if (!enabled_ || tr == nullptr) return;
-    TrackState& cached = states_[tr];
-    if (cached.linVol == volume) return;
-    // Run() will refresh the full cache entry on its next tick. We only set
-    // linVol here so identical immediate repeats are short-circuited.
-    cached.linVol = volume;
-    updateTrackRouting(tr);
+    auto it = states_.find(tr);
+    if (it == states_.end()) return;
+    if (it->second.linVol == volume) return;
+    it->second.linVol = volume;
+    processTrack(tr);
 }
 
 int TotalReaperCSurf::Extended(int call, void* parm1, void* /*parm2*/,
                                void* /*parm3*/) {
     if (call == CSURF_EXT_SETINPUTMONITOR) {
-        updateTrackRouting(static_cast<MediaTrack*>(parm1));
+        processTrack(static_cast<MediaTrack*>(parm1));
         return 1;
     }
     return 0;
@@ -116,56 +123,63 @@ int TotalReaperCSurf::Extended(int call, void* parm1, void* /*parm2*/,
 
 void TotalReaperCSurf::Run() {
     if (!enabled_) return;
-
     const int trackCount = CountTracks(nullptr);
     for (int i = 0; i < trackCount; ++i) {
-        MediaTrack* tr = GetTrack(nullptr, i);
-        if (tr == nullptr) continue;
+        processTrack(GetTrack(nullptr, i));
+    }
+}
 
-        const int recInput = static_cast<int>(GetMediaTrackInfo_Value(tr, "I_RECINPUT"));
-        const int recMon = static_cast<int>(GetMediaTrackInfo_Value(tr, "I_RECMON"));
-        const double linVol = GetMediaTrackInfo_Value(tr, "D_VOL");
-        const double pan = GetMediaTrackInfo_Value(tr, "D_PAN");
-        const double width = GetMediaTrackInfo_Value(tr, "D_WIDTH");
-        const double dualPanL = GetMediaTrackInfo_Value(tr, "D_DUALPANL");
-        const double dualPanR = GetMediaTrackInfo_Value(tr, "D_DUALPANR");
-        const int panMode = static_cast<int>(GetMediaTrackInfo_Value(tr, "I_PANMODE"));
+void TotalReaperCSurf::processTrack(MediaTrack* tr) {
+    if (tr == nullptr || tr == GetMasterTrack(nullptr)) return;
 
-        const TrackState& cached = states_[tr];
-        if (cached.recInput == recInput &&
-            cached.recMon == recMon &&
-            cached.linVol == linVol &&
-            cached.pan == pan &&
-            cached.width == width &&
-            cached.dualPanL == dualPanL &&
-            cached.dualPanR == dualPanR &&
-            cached.panMode == panMode) {
-            continue;
+    const int recInput = static_cast<int>(GetMediaTrackInfo_Value(tr, "I_RECINPUT"));
+    const int recMon = static_cast<int>(GetMediaTrackInfo_Value(tr, "I_RECMON"));
+    const bool currActive = (recMon != 0 && hwStartChannel(recInput) >= 0);
+
+    auto it = states_.find(tr);
+    const bool wasTracked = (it != states_.end());
+
+    // Don't pollute TotalMix for tracks the user never engaged. New tracks
+    // arrive with default inputs (e.g. MADI 1 on Frank's UFX+) and would
+    // otherwise immediately push -∞ to that channel, overwriting whatever
+    // an actually-monitoring track is putting there.
+    if (!wasTracked && !currActive) return;
+
+    const double linVol = GetMediaTrackInfo_Value(tr, "D_VOL");
+    const double pan = GetMediaTrackInfo_Value(tr, "D_PAN");
+    const double width = GetMediaTrackInfo_Value(tr, "D_WIDTH");
+    const double dualPanL = GetMediaTrackInfo_Value(tr, "D_DUALPANL");
+    const double dualPanR = GetMediaTrackInfo_Value(tr, "D_DUALPANR");
+    const int panMode = static_cast<int>(GetMediaTrackInfo_Value(tr, "I_PANMODE"));
+
+    if (wasTracked) {
+        const TrackState& c = it->second;
+        if (c.recInput == recInput && c.recMon == recMon &&
+            c.linVol == linVol && c.pan == pan && c.width == width &&
+            c.dualPanL == dualPanL && c.dualPanR == dualPanR &&
+            c.panMode == panMode) {
+            return;
         }
-
-        // If the input was reassigned, close out the OLD input first so it
-        // doesn't stay stuck at the last fader value in TotalMix. Then fall
-        // through to the normal update for the new input.
-        if (cached.recInput != recInput && hwStartChannel(cached.recInput) >= 0) {
-            sendFaderForInput(cached.recInput, kMinusInfDb);
+        // If the user reassigned the input, close out the old channel(s)
+        // before pushing anything for the new ones.
+        if (c.recInput != recInput && hwStartChannel(c.recInput) >= 0) {
+            sendFaderForInput(c.recInput, kMinusInfDb);
         }
+    }
 
-        if (hwStartChannel(recInput) < 0) {
-            // No valid hardware input now — leave cache reflecting current
-            // state so we don't re-send the close-out next tick.
-            TrackState& s = states_[tr];
-            s.recInput = recInput;
-            s.recMon = recMon;
-            s.linVol = linVol;
-            s.pan = pan;
-            s.width = width;
-            s.dualPanL = dualPanL;
-            s.dualPanR = dualPanR;
-            s.panMode = panMode;
-            continue;
-        }
-
+    if (currActive) {
         updateTrackRouting(tr);
+    } else {
+        // Transition out of active. Drive the channel(s) to -∞ and restore
+        // the track's main send so REAPER's own monitoring works again.
+        if (hwStartChannel(recInput) >= 0) {
+            sendFaderForInput(recInput, kMinusInfDb);
+        }
+        if (wasTracked && it->second.savedMainSend != -1) {
+            SetMediaTrackInfo_Value(tr, "B_MAINSEND",
+                static_cast<double>(it->second.savedMainSend));
+        }
+        states_.erase(tr);
     }
 }
 

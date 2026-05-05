@@ -53,6 +53,16 @@ public:
     bool isEnabled() const noexcept { return enabled_; }
 
 private:
+    // Reconcile one track's TotalMix routing with its current REAPER state.
+    // Implements the state machine: only tracks that have been seen "active"
+    // (monitor on with a hardware input) are kept in the cache; tracks that
+    // never had monitor on are ignored entirely so they don't push spurious
+    // -∞ values that overwrite legitimately-active channels.
+    void processTrack(MediaTrack* tr);
+
+    // Lower-level helper called by processTrack for tracks that should
+    // currently be reflected in TotalMix. Pushes fader, balpan and manages
+    // the B_MAINSEND override.
     void updateTrackRouting(MediaTrack* tr);
 
     // Send the fader value to TotalMix for every channel of a given
