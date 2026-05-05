@@ -45,10 +45,15 @@ void TotalReaperCSurf::setEnabled(bool enabled) {
 
     if (!enabled) {
         // Drive every previously-mirrored input to -∞ in TotalMix so REAPER
-        // stops affecting monitoring. We use the cached recInput (not a fresh
-        // re-read) because the track may have been deleted by now.
+        // stops affecting monitoring, and restore each track's main send so
+        // REAPER's own monitoring works again. We use the cached recInput
+        // because the track may have been deleted by now.
         for (const auto& [tr, state] : states_) {
             sendFader(state.recInput, kMinusInfDb);
+            if (state.savedMainSend != -1) {
+                SetMediaTrackInfo_Value(tr, "B_MAINSEND",
+                                        static_cast<double>(state.savedMainSend));
+            }
         }
         states_.clear();
         return;
@@ -140,16 +145,38 @@ void TotalReaperCSurf::updateTrackRouting(MediaTrack* tr) {
     const int recMon = static_cast<int>(GetMediaTrackInfo_Value(tr, "I_RECMON"));
     const double linVol = GetMediaTrackInfo_Value(tr, "D_VOL");
 
-    // Refresh cache so Run()'s no-change shortcut applies on the next tick
-    // and SetSurfaceVolume's heartbeat dedupe sees the latest value.
-    states_[tr] = {recInput, recMon, linVol};
-
     float targetDb = kMinusInfDb;
     if (recMon != 0 && linVol > 0.0) {
         targetDb = static_cast<float>(20.0 * std::log10(linVol));
         if (targetDb > kMaxDb) targetDb = kMaxDb;
         if (targetDb < kMinusInfDb) targetDb = kMinusInfDb;
     }
+
+    // Mute REAPER's software monitor on this track while we're driving its
+    // input from TotalMix. Otherwise the user hears the input twice — once
+    // direct via TotalMix (zero latency) and once through REAPER's master
+    // (with buffer-size latency, causing a comb filter).
+    TrackState& state = states_[tr];
+    const bool nowActive = (targetDb > kMinusInfDb);
+    const bool wasOverridden = (state.savedMainSend != -1);
+    if (nowActive && !wasOverridden) {
+        const int currentMainSend = static_cast<int>(
+            GetMediaTrackInfo_Value(tr, "B_MAINSEND"));
+        if (currentMainSend != 0) {
+            state.savedMainSend = currentMainSend;
+            SetMediaTrackInfo_Value(tr, "B_MAINSEND", 0.0);
+        }
+    } else if (!nowActive && wasOverridden) {
+        SetMediaTrackInfo_Value(tr, "B_MAINSEND",
+                                static_cast<double>(state.savedMainSend));
+        state.savedMainSend = -1;
+    }
+
+    // Refresh cache so Run()'s no-change shortcut applies on the next tick
+    // and SetSurfaceVolume's heartbeat dedupe sees the latest value.
+    state.recInput = recInput;
+    state.recMon = recMon;
+    state.linVol = linVol;
 
     sendFader(recInput, targetDb);
 }

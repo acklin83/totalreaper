@@ -67,6 +67,11 @@ private:
         int recInput = -2;   // -2 = "never seen" (distinct from -1 = no input)
         int recMon = -1;
         double linVol = -1.0;
+        // -1 = we haven't overridden this track's main send. Otherwise the
+        // value B_MAINSEND had before we set it to 0 — restored on disengage.
+        // Overriding silences REAPER's software monitor so the user doesn't
+        // hear the input doubled (TotalMix direct + REAPER through-the-DAW).
+        int savedMainSend = -1;
     };
     std::unordered_map<MediaTrack*, TrackState> states_;
 
