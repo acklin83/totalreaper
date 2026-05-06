@@ -187,5 +187,3 @@ totalreaper/
 ## License
 
 MIT — see [LICENSE](LICENSE).
-
-Sister project: [acklin83/reaper-uf8](https://github.com/acklin83/reaper-uf8) (SSL UF8 → REAPER, also MIT).
