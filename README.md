@@ -80,6 +80,18 @@ Find all actions in REAPER's Action List by typing "TotalReaper".
 
 ## Install (pre-built)
 
+### Via ReaPack (recommended)
+
+If you already use [ReaPack](https://reapack.com/), add the Frank Acklin
+Scripts repository — TotalReaper updates then arrive automatically:
+
+1. **Extensions → ReaPack → Import repositories…**
+2. Paste: `https://github.com/acklin83/reaper-scripts/raw/main/index.xml`
+3. **Extensions → ReaPack → Browse packages…** → search *TotalReaper* → install
+4. Restart REAPER
+
+### Manual download
+
 Grab the binary for your platform from the [latest release](https://github.com/acklin83/totalreaper/releases/latest)
 and drop it in REAPER's UserPlugins folder, then restart REAPER:
 
