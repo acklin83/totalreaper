@@ -10,26 +10,54 @@ Global OSC protocol.
 Out of scope: TotalMix-internal effects (channel EQ, dynamics, room EQ,
 FX send/return bus). Those stay in TotalMix.
 
-**Status:** Phase 0 — research and protocol discovery. Not ready for production use.
-
-**See also:** [Notion project page](https://www.notion.so/356e5107cf8e81dd9dd1ce449d2f315e)
-for full scope, roadmap, and design decisions.
+**Status:** Phase 1 — MVP working. Track-to-input routing mirror, per-track
+preamp controls, and track-to-track sends all flow from REAPER to TotalMix
+in real time. Not yet ready for unattended production use.
 
 ---
 
-## What it does today (v0.1.0 — MVP skeleton)
+## What it does today (v0.1.1)
 
-Two REAPER actions:
+### Routing mirror (the big one)
+
+**TotalReaper: Toggle Routing Mirror** — when enabled, REAPER becomes the
+source of truth for the TotalMix input matrix:
+
+- Track volume / mute / pan / width → `/mix/in/<n>/<bus>/fader|balpan` on
+  the bus the track records to. REAPER's own software monitor is muted
+  while the mirror is engaged, so you only hear TotalMix's hardware path.
+- Stereo input tracks emit fader/pan/width for both halves of the pair.
+- Track-to-track sends → matrix routings to the destination bus, with
+  per-send level/pan respected.
+- Only tracks the user has actually engaged (armed, monitor-on, or with
+  active sends) participate, so the mirror doesn't wipe TotalMix routings
+  the user set up by hand on other channels.
+- Reacts live to input reassignment, send add/remove, and stereo-link
+  changes.
+- Toggle state persists across REAPER restarts.
+
+### Per-track preamp control
+
+Four actions operate on selected tracks and address the device's input
+strip via `/input/<n>/...`:
+
+- **TotalReaper: Increase / Decrease preamp gain on selected tracks (±1 dB)**
+- **TotalReaper: Toggle 48V phantom on selected tracks**
+- **TotalReaper: Toggle pad on selected tracks**
+- **TotalReaper: Toggle phase invert on selected tracks**
+
+Bind these to keyboard shortcuts (or a control surface) and you have
+direct mic-pre control from inside REAPER.
+
+### Diagnostics
 
 - **TotalReaper: Toggle OSC Dump** — listens on UDP 7002 and prints every
-  incoming OSC message from TotalMix to the REAPER console. The primary
-  Phase 0 protocol-exploration tool: enable it, click around in TotalMix,
-  watch the paths fly by.
+  incoming OSC message from TotalMix to the REAPER console. The original
+  Phase 0 protocol-exploration tool, kept around for debugging.
 - **TotalReaper: Send Test Mute Input 1** — sends `/input/1/mute` to
-  TotalMix on UDP 7001. If the connection works, Input 1 will mute. Run
-  again to unmute. Sanity test.
+  TotalMix on UDP 7001. Sanity test for the TX path.
 
-Find both actions in REAPER's Action List by typing "TotalReaper".
+Find all actions in REAPER's Action List by typing "TotalReaper".
 
 ---
 
@@ -80,13 +108,13 @@ Or do it manually:
 
 | Platform | Source | Destination |
 |---|---|---|
-| macOS | `build/reaper_totalreaper.dylib` | `~/Library/Application Support/REAPER/UserPlugins/` |
+| macOS | `build/reaper_totalreaper-<arch>.dylib` | `~/Library/Application Support/REAPER/UserPlugins/` |
 | Windows | `build/Release/reaper_totalreaper.dll` | `%APPDATA%\REAPER\UserPlugins\` |
 
 Restart REAPER. You should see in the console (View → Show Console):
 
 ```
-[TotalReaper] v0.1.0 loaded — find actions in Action List by typing 'TotalReaper'
+[TotalReaper] v0.1.1 loaded — find actions in Action List by typing 'TotalReaper'
 ```
 
 ---
@@ -95,20 +123,17 @@ Restart REAPER. You should see in the console (View → Show Console):
 
 1. Start TotalMix with Global OSC enabled (see Prerequisites).
 2. In REAPER: **Actions → Show action list...**, type `TotalReaper`.
-3. Run **TotalReaper: Toggle OSC Dump**. Console should show:
-   ```
-   [OSC] server listening on UDP 7002
-   [TotalReaper] OSC dump started — interact with TotalMix to see paths
-   ```
-4. In TotalMix, move a fader. Console should show messages like:
-   ```
-   [RX] /mix/in/1/0/fader ,f -12.5
-   ```
-5. Run **TotalReaper: Send Test Mute Input 1**. TotalMix Input 1 should mute.
-   Run again to unmute.
+3. Run **TotalReaper: Toggle Routing Mirror**. Move a track fader and the
+   corresponding TotalMix input fader should follow.
+4. Select a track recording from a mic input and run
+   **TotalReaper: Toggle 48V phantom on selected tracks** — the device
+   should click and the strip's 48V indicator should light.
+5. If something looks wrong, run **TotalReaper: Toggle OSC Dump** and
+   watch the console as you click around in TotalMix. Compare paths
+   against `docs/osc-paths-discovered.md`.
 
-If step 4 shows nothing, check that TotalMix is actually sending OSC and
-that no firewall is blocking UDP 7002 inbound on localhost.
+If nothing happens, check that TotalMix is actually emitting OSC and that
+no firewall is blocking UDP 7001/7002 on localhost.
 
 ---
 
@@ -117,25 +142,33 @@ that no firewall is blocking UDP 7002 inbound on localhost.
 ```
 totalreaper/
 ├── src/
-│   ├── main.cpp                # Plugin entry, action registration
-│   ├── osc/                    # Minimal OSC 1.0 (no dependencies)
-│   │   ├── OscMessage.{h,cpp}
-│   │   ├── OscClient.{h,cpp}
-│   │   └── OscServer.{h,cpp}
-│   ├── reaper/                 # SDK glue
-│   │   ├── ReaperAPI.{h,cpp}
+│   ├── main.cpp                    # Plugin entry, action + csurf registration
+│   ├── osc/                        # Minimal OSC 1.0, no dependencies
+│   │   ├── OscMessage.{h,cpp}      # Wire format
+│   │   ├── OscClient.{h,cpp}       # UDP TX
+│   │   ├── OscServer.{h,cpp}       # UDP RX, bundle dispatch
+│   │   └── TotalMixState.{h,cpp}   # Cache of last-seen TotalMix values
+│   ├── reaper/
+│   │   ├── ReaperAPI.{h,cpp}       # SDK function-pointer glue
+│   │   ├── ChannelMap.{h,cpp}      # REAPER input slot → device hw index
 │   │   └── Console.h
-│   └── actions/                # User-facing actions
+│   ├── csurf/
+│   │   └── TotalReaperCSurf.{h,cpp}# Routing mirror (REAPER → TotalMix)
+│   └── actions/
 │       ├── Actions.h
 │       ├── DumpOscAction.cpp
-│       └── TestSendAction.cpp
+│       ├── TestSendAction.cpp
+│       ├── RoutingMirrorAction.cpp
+│       └── PreampActions.cpp
 ├── external/
-│   └── reaper-sdk/             # git submodule
+│   └── reaper-sdk/                 # git submodule
 ├── docs/
-│   └── osc-paths-discovered.md
-├── .github/workflows/build.yml # macOS + Windows CI
+│   └── osc-paths-discovered.md     # Living protocol reference
+├── .github/workflows/
+│   ├── build.yml                   # macOS + Windows CI
+│   └── release.yml                 # Publish on v* tag push
 ├── CMakeLists.txt
-├── LICENSE                     # MIT
+├── LICENSE                         # MIT
 └── README.md
 ```
 
@@ -143,13 +176,14 @@ totalreaper/
 
 ## Roadmap
 
-See [Notion](https://www.notion.so/356e5107cf8e81dd9dd1ce449d2f315e) for the
-full plan. Short version:
-
-- **Phase 0 (now):** Protocol discovery — enumerate Global OSC paths, value ranges, latency
-- **Phase 1:** MVP — track-arm-triggered routing (ADM-style), pre-gain / 48V / pad / phase per track
-- **Phase 2:** Cue mixes via REAPER routing graph, integration with phones.stoersender.ch
-- **Phase 3:** SSL UF8 / UC1 control surface bridge
+- **Phase 0 — done:** Protocol discovery. Global OSC vocabulary mapped in
+  `docs/osc-paths-discovered.md`.
+- **Phase 1 — current:** MVP. Routing mirror via control surface; per-track
+  preamp (gain / 48V / pad / phase); track-to-track sends mirrored to the
+  TotalMix matrix.
+- **Phase 2:** Cue mixes via REAPER routing graph, integration with
+  phones.stoersender.ch.
+- **Phase 3:** SSL UF8 / UC1 control surface bridge.
 
 ---
 
