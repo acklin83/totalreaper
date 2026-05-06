@@ -334,16 +334,23 @@ void TotalReaperCSurf::updateTrackRouting(MediaTrack* tr) {
     // Mute REAPER's software monitor while we're driving the channel from
     // TotalMix — otherwise the user hears the input twice (TotalMix direct +
     // REAPER through-the-DAW with buffer-size latency = comb filter).
+    //
+    // Enforce B_MAINSEND=0 on every tick (not just first activation): project
+    // load, undo, automation, or another control surface can restore the main
+    // send behind our back. The cached savedMainSend captures the original
+    // value the first time we see it non-zero, so we can restore it on
+    // disengage.
     TrackState& state = states_[tr];
-    const bool wasOverridden = (state.savedMainSend != -1);
-    if (nowActive && !wasOverridden) {
+    if (nowActive) {
         const int currentMainSend = static_cast<int>(
             GetMediaTrackInfo_Value(tr, "B_MAINSEND"));
-        if (currentMainSend != 0) {
+        if (state.savedMainSend == -1 && currentMainSend != 0) {
             state.savedMainSend = currentMainSend;
+        }
+        if (currentMainSend != 0) {
             SetMediaTrackInfo_Value(tr, "B_MAINSEND", 0.0);
         }
-    } else if (!nowActive && wasOverridden) {
+    } else if (state.savedMainSend != -1) {
         SetMediaTrackInfo_Value(tr, "B_MAINSEND",
                                 static_cast<double>(state.savedMainSend));
         state.savedMainSend = -1;
@@ -439,12 +446,18 @@ void TotalReaperCSurf::pushInputRouting(int recInput, int bus, float db,
     const bool stereo = isStereoInput(recInput);
     if (stereo) {
         sendFader(leftCh + 1, bus, db);
+        // Stereo inputs: don't touch balpan. TotalMix already handles the
+        // pair correctly on its own — when split into 2 mono strips it sets
+        // each strip's balpan to hard L/R; when linked it treats balpan as a
+        // balance for the pair. Sending two balpan messages to the L and R
+        // hardware channels would either overwrite each other on a linked
+        // strip (panning the whole pair) or fight the user's manual setting
+        // on split strips. (void) the unused params to silence warnings.
+        (void)panL; (void)panR;
+        return;
     }
     if (sendPan) {
         sendBalpan(leftCh, bus, panL);
-        if (stereo) {
-            sendBalpan(leftCh + 1, bus, panR);
-        }
     }
 }
 

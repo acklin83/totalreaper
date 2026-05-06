@@ -79,9 +79,12 @@ private:
     // the B_MAINSEND override.
     void updateTrackRouting(MediaTrack* tr);
 
-    // Push a fader value (+ optional balpans) for an entire I_RECINPUT to
-    // a specific bus. Splits stereo inputs into left/right channels.
-    // panL == panR == NaN_marker means "don't touch balpan".
+    // Push a fader value (+ optional balpan) for an entire I_RECINPUT to a
+    // specific bus. Stereo inputs get fader on both channels but no balpan —
+    // TotalMix already lays out the pair correctly (hard L/R when split,
+    // balance when linked); two balpan sends would overwrite each other on a
+    // linked strip and fight the user's hand-set values on split strips.
+    // sendPan=false means "don't touch balpan" (also honored for mono).
     void pushInputRouting(int recInput, int bus, float db,
                           float panL, float panR, bool sendPan);
 
