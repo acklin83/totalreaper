@@ -1,7 +1,13 @@
 cmake_minimum_required(VERSION 3.20)
 
+# CMP0091 NEW: select MSVC runtime via the MSVC_RUNTIME_LIBRARY target property
+# instead of baking /MD or /MT into the default flags. Lets us static-link the
+# runtime so the shipped DLL doesn't depend on the VC++ Redistributable being
+# installed on the user's machine.
+cmake_policy(SET CMP0091 NEW)
+
 project(totalreaper
-    VERSION 0.1.2
+    VERSION 0.1.3
     DESCRIPTION "REAPER ↔ RME TotalMix FX Global OSC Bridge"
     LANGUAGES CXX
 )
@@ -89,6 +95,16 @@ target_include_directories(reaper_totalreaper SYSTEM PRIVATE
 
 # Platform-specific networking and naming
 if(APPLE)
+    # Set a baseline deployment target so the dylib loads on older macOS than
+    # the one we're building on. Without this, CMake defaults to the host SDK
+    # version (e.g. macOS 14 on GitHub Actions' macos-latest runner) and the
+    # resulting dylib silently won't load on Big Sur / Monterey machines.
+    # 11.0 is the first macOS that shipped with arm64 Macs, so it covers every
+    # arm64 user; x86_64 users get coverage back to Big Sur too.
+    if(NOT CMAKE_OSX_DEPLOYMENT_TARGET)
+        set(CMAKE_OSX_DEPLOYMENT_TARGET "11.0" CACHE STRING "macOS deployment target" FORCE)
+    endif()
+
     # REAPER's plugin loader on macOS expects an arch suffix unless the dylib
     # is a universal binary. Match REAPER's own convention used by SWS, ImGui,
     # ReaPack etc. ("reaper_<name>-arm64.dylib" / "-x86_64.dylib").
@@ -112,6 +128,10 @@ elseif(WIN32)
         PREFIX ""
         SUFFIX ".dll"
         OUTPUT_NAME "reaper_totalreaper"
+        # Static-link the MSVC runtime so the shipped DLL works on any
+        # Windows machine without requiring the VC++ Redistributable.
+        # SWS, ImGui, and other distributable REAPER extensions do the same.
+        MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>"
     )
     target_link_libraries(reaper_totalreaper PRIVATE ws2_32)
     # WIN32_LEAN_AND_MEAN tells windows.h (pulled in by the REAPER SDK) NOT
