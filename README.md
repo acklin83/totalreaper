@@ -16,7 +16,7 @@ in real time. Not yet ready for unattended production use.
 
 ---
 
-## What it does today (v0.1.1)
+## What it does today (v0.1.3)
 
 ### Routing mirror (the big one)
 
@@ -72,9 +72,25 @@ Find all actions in REAPER's Action List by typing "TotalReaper".
 
 2. **REAPER 6 or later**.
 
-3. **Build toolchain**:
+3. **Build toolchain** (only if building from source — see Install below for pre-built binaries):
    - macOS: Xcode Command Line Tools, CMake 3.20+
    - Windows: Visual Studio 2022 (or Build Tools), CMake 3.20+
+
+---
+
+## Install (pre-built)
+
+Grab the binary for your platform from the [latest release](https://github.com/acklin83/totalreaper/releases/latest)
+and drop it in REAPER's UserPlugins folder, then restart REAPER:
+
+| Platform | Asset | Destination |
+|---|---|---|
+| macOS (arm64) | `reaper_totalreaper-arm64.dylib` | `~/Library/Application Support/REAPER/UserPlugins/` |
+| Windows (x64) | `reaper_totalreaper.dll` | `%APPDATA%\REAPER\UserPlugins\` |
+
+The Windows DLL has the MSVC runtime statically linked, so you don't
+need the Visual C++ Redistributable installed. The macOS dylib targets
+macOS 11 (Big Sur) or later.
 
 ---
 
@@ -114,7 +130,7 @@ Or do it manually:
 Restart REAPER. You should see in the console (View → Show Console):
 
 ```
-[TotalReaper] v0.1.1 loaded — find actions in Action List by typing 'TotalReaper'
+[TotalReaper] v0.1.3 loaded — find actions in Action List by typing 'TotalReaper'
 ```
 
 ---
