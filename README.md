@@ -181,14 +181,9 @@ totalreaper/
 - **Phase 1 — current:** MVP. Routing mirror via control surface; per-track
   preamp (gain / 48V / pad / phase); track-to-track sends mirrored to the
   TotalMix matrix.
-- **Phase 2:** Cue mixes via REAPER routing graph, integration with
-  phones.stoersender.ch.
-- **Phase 3:** SSL UF8 / UC1 control surface bridge.
 
 ---
 
 ## License
 
 MIT — see [LICENSE](LICENSE).
-
-Sister project: [acklin83/reaper-uf8](https://github.com/acklin83/reaper-uf8) (SSL UF8 → REAPER, also MIT).
