@@ -97,7 +97,8 @@ and drop it in REAPER's UserPlugins folder, then restart REAPER:
 
 | Platform | Asset | Destination |
 |---|---|---|
-| macOS (arm64) | `reaper_totalreaper-arm64.dylib` | `~/Library/Application Support/REAPER/UserPlugins/` |
+| macOS (Apple Silicon) | `reaper_totalreaper-arm64.dylib` | `~/Library/Application Support/REAPER/UserPlugins/` |
+| macOS (Intel) | `reaper_totalreaper-x86_64.dylib` | `~/Library/Application Support/REAPER/UserPlugins/` |
 | Windows (x64) | `reaper_totalreaper.dll` | `%APPDATA%\REAPER\UserPlugins\` |
 
 The Windows DLL has the MSVC runtime statically linked, so you don't

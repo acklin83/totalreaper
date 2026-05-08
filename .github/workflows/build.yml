@@ -9,7 +9,7 @@ on:
 
 jobs:
   build:
-    name: ${{ matrix.os }}
+    name: ${{ matrix.artifact }}
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -18,9 +18,15 @@ jobs:
           - os: macos-latest
             artifact: reaper_totalreaper-arm64.dylib
             artifact_path: build/reaper_totalreaper-arm64.dylib
+            configure_extra: ""
+          - os: macos-latest
+            artifact: reaper_totalreaper-x86_64.dylib
+            artifact_path: build/reaper_totalreaper-x86_64.dylib
+            configure_extra: "-DCMAKE_OSX_ARCHITECTURES=x86_64"
           - os: windows-latest
             artifact: reaper_totalreaper.dll
             artifact_path: build/Release/reaper_totalreaper.dll
+            configure_extra: ""
 
     steps:
       - name: Checkout
@@ -29,7 +35,7 @@ jobs:
           submodules: recursive
 
       - name: Configure
-        run: cmake -B build -DCMAKE_BUILD_TYPE=Release
+        run: cmake -B build -DCMAKE_BUILD_TYPE=Release ${{ matrix.configure_extra }}
 
       - name: Build
         run: cmake --build build --config Release --parallel
