@@ -27,10 +27,11 @@ namespace totalreaper::actions {
 
 namespace {
 
-constexpr const char* kExtGain  = "P_EXT:totalreaper_gain";
-constexpr const char* kExt48v   = "P_EXT:totalreaper_48v";
-constexpr const char* kExtPad   = "P_EXT:totalreaper_pad";
-constexpr const char* kExtPhase = "P_EXT:totalreaper_phase";
+constexpr const char* kExtGain      = "P_EXT:totalreaper_gain";
+constexpr const char* kExt48v       = "P_EXT:totalreaper_48v";
+constexpr const char* kExtPad       = "P_EXT:totalreaper_pad";
+constexpr const char* kExtPhase     = "P_EXT:totalreaper_phase";
+constexpr const char* kExtAutolevel = "P_EXT:totalreaper_autolevel";
 
 constexpr int kRecInputMidi         = 4096;
 constexpr int kRecInputMultichannel = 2048;
@@ -39,6 +40,7 @@ constexpr int kRecInputChannelMask  = 0x3FF;
 
 int s_gainInc = 0, s_gainDec = 0;
 int s_t48v = 0, s_tPad = 0, s_tPhase = 0;
+int s_tAutolevel = 0;
 
 int hwStartChannel(int recInput) {
     if (recInput < 0) return -1;
@@ -228,13 +230,15 @@ int& gainDecCommandId()  { return s_gainDec; }
 int& toggle48vCommandId() { return s_t48v; }
 int& togglePadCommandId() { return s_tPad; }
 int& togglePhaseCommandId() { return s_tPhase; }
+int& toggleAutolevelCommandId() { return s_tAutolevel; }
 
 bool runPreampAction(int command) {
-    if (command == s_gainInc)   { runGainDelta(+1.0); return true; }
-    if (command == s_gainDec)   { runGainDelta(-1.0); return true; }
-    if (command == s_t48v)      { runToggleFlag(kExt48v, "48v"); return true; }
-    if (command == s_tPad)      { runTogglePadWithMutePulse(); return true; }
-    if (command == s_tPhase)    { runToggleFlag(kExtPhase, "phase"); return true; }
+    if (command == s_gainInc)    { runGainDelta(+1.0); return true; }
+    if (command == s_gainDec)    { runGainDelta(-1.0); return true; }
+    if (command == s_t48v)       { runToggleFlag(kExt48v, "48v"); return true; }
+    if (command == s_tPad)       { runTogglePadWithMutePulse(); return true; }
+    if (command == s_tPhase)     { runToggleFlag(kExtPhase, "phase"); return true; }
+    if (command == s_tAutolevel) { runToggleFlag(kExtAutolevel, "autolevel/enable"); return true; }
     return false;
 }
 

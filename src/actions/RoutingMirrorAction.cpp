@@ -41,6 +41,9 @@ int toggleActionState(int command) {
     if (command == dumpOscCommandId()) {
         return isDumpToConsoleActive() ? 1 : 0;
     }
+    if (command == toggleTalkbackCommandId()) {
+        return isTalkbackOn() ? 1 : 0;
+    }
     return -1;
 }
 

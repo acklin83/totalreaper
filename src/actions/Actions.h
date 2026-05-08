@@ -29,6 +29,7 @@ bool runDumpOsc(int command);
 bool runTestSend(int command);
 bool runToggleRoutingMirror(int command);
 bool runPreampAction(int command);
+bool runGlobalAction(int command);
 
 // Receive handler installed by main.cpp on the always-running OSC server.
 // Updates TotalMixState and optionally logs to console.
@@ -36,6 +37,11 @@ void rxHandler(const osc::Message& m);
 
 // True while the dump action is currently toggling console logging on.
 bool isDumpToConsoleActive();
+
+// Reflects the toggle state of "Toggle Talkback". Tracked locally — TotalMix
+// has no readback path for /controlroom/talkback, so this lags reality if
+// the user toggles talkback inside TotalMix's UI.
+bool isTalkbackOn();
 
 // Toggle-state callback for "toggleaction" registration. Returns 1 if the
 // command's feature is currently on, 0 if off, -1 if the command isn't ours
@@ -52,5 +58,9 @@ int& gainDecCommandId();
 int& toggle48vCommandId();
 int& togglePadCommandId();
 int& togglePhaseCommandId();
+int& toggleAutolevelCommandId();
+int& toggleTalkbackCommandId();
+int& snapshotSaveCommandId();
+int& snapshotLoadCommandId();
 
 } // namespace totalreaper::actions

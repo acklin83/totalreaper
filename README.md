@@ -16,7 +16,7 @@ in real time. Not yet ready for unattended production use.
 
 ---
 
-## What it does today (v0.1.6)
+## What it does today (v0.1.7)
 
 ### Routing mirror (the big one)
 
@@ -38,16 +38,33 @@ source of truth for the TotalMix input matrix:
 
 ### Per-track preamp control
 
-Four actions operate on selected tracks and address the device's input
+Five actions operate on selected tracks and address the device's input
 strip via `/input/<n>/...`:
 
 - **TotalReaper: Increase / Decrease preamp gain on selected tracks (±1 dB)**
 - **TotalReaper: Toggle 48V phantom on selected tracks**
 - **TotalReaper: Toggle pad on selected tracks**
 - **TotalReaper: Toggle phase invert on selected tracks**
+- **TotalReaper: Toggle AutoLevel on selected tracks** — TotalMix rides
+  the input gain automatically. Useful for unattended gain-staging during
+  sound-check: arm the channel, enable AutoLevel, let the source play,
+  disable when settled.
 
 Bind these to keyboard shortcuts (or a control surface) and you have
 direct mic-pre control from inside REAPER.
+
+### Studio actions
+
+Global TotalMix controls and project-state recall:
+
+- **TotalReaper: Toggle Talkback** — drives `/controlroom/talkback`. Bind
+  to a footswitch via Stream Deck / SSL UF8 / keyboard shortcut.
+- **TotalReaper: Save TotalMix snapshot for current project** — writes
+  the current TotalMix state into snapshot slot 8 (reserved by convention
+  for TotalReaper). Slots 1–7 stay yours.
+- **TotalReaper: Load TotalMix snapshot for current project** — recalls
+  slot 8. Pair with project-open hook (manual for now) to bring the
+  hardware back to where you left it.
 
 ### Diagnostics
 
@@ -143,7 +160,7 @@ Or do it manually:
 Restart REAPER. You should see in the console (View → Show Console):
 
 ```
-[TotalReaper] v0.1.6 loaded — find actions in Action List by typing 'TotalReaper'
+[TotalReaper] v0.1.7 loaded — find actions in Action List by typing 'TotalReaper'
 ```
 
 ---

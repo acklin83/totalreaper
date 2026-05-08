@@ -42,6 +42,7 @@ bool onAction2(KbdSectionInfo* /*sec*/, int command, int /*val*/, int /*val2*/,
     if (totalreaper::actions::runTestSend(command)) return true;
     if (totalreaper::actions::runToggleRoutingMirror(command)) return true;
     if (totalreaper::actions::runPreampAction(command)) return true;
+    if (totalreaper::actions::runGlobalAction(command)) return true;
     return false;
 }
 
@@ -157,6 +158,23 @@ REAPER_PLUGIN_DLL_EXPORT int ReaperPluginEntry(REAPER_PLUGIN_HINSTANCE /*hInstan
                    "TOTALREAPER_TOGGLE_PHASE",
                    "TotalReaper: Toggle phase invert on selected tracks",
                    totalreaper::actions::togglePhaseCommandId());
+    registerAction(rec,
+                   "TOTALREAPER_TOGGLE_AUTOLEVEL",
+                   "TotalReaper: Toggle AutoLevel on selected tracks",
+                   totalreaper::actions::toggleAutolevelCommandId());
+
+    registerAction(rec,
+                   "TOTALREAPER_TOGGLE_TALKBACK",
+                   "TotalReaper: Toggle Talkback",
+                   totalreaper::actions::toggleTalkbackCommandId());
+    registerAction(rec,
+                   "TOTALREAPER_SNAPSHOT_SAVE",
+                   "TotalReaper: Save TotalMix snapshot for current project",
+                   totalreaper::actions::snapshotSaveCommandId());
+    registerAction(rec,
+                   "TOTALREAPER_SNAPSHOT_LOAD",
+                   "TotalReaper: Load TotalMix snapshot for current project",
+                   totalreaper::actions::snapshotLoadCommandId());
 
     // hookcommand2 (not hookcommand) — required for custom_action IDs.
     rec->Register("hookcommand2", reinterpret_cast<void*>(onAction2));
@@ -171,7 +189,7 @@ REAPER_PLUGIN_DLL_EXPORT int ReaperPluginEntry(REAPER_PLUGIN_HINSTANCE /*hInstan
         }
     }
 
-    totalreaper::reaper::debugLog("[TotalReaper] v0.1.6 loaded — "
+    totalreaper::reaper::debugLog("[TotalReaper] v0.1.7 loaded — "
                                   "find actions in Action List by typing 'TotalReaper'");
     return 1;
 }
