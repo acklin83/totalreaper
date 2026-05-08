@@ -171,7 +171,7 @@ REAPER_PLUGIN_DLL_EXPORT int ReaperPluginEntry(REAPER_PLUGIN_HINSTANCE /*hInstan
         }
     }
 
-    totalreaper::reaper::debugLog("[TotalReaper] v0.1.4 loaded — "
+    totalreaper::reaper::debugLog("[TotalReaper] v0.1.5 loaded — "
                                   "find actions in Action List by typing 'TotalReaper'");
     return 1;
 }

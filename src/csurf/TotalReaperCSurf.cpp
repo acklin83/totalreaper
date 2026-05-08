@@ -175,6 +175,21 @@ void TotalReaperCSurf::setEnabled(bool enabled) {
         return;
     }
 
+    // Ask TotalMix to re-emit every current parameter so our TotalMixState
+    // cache gets seeded for channel-strip controls (gain, 48v, pad, phase,
+    // mute) we haven't observed yet. Without this, the first preamp gain
+    // delta on a fresh track had to wait for the user to nudge the knob in
+    // TotalMix once. /sendall is the official Global OSC trigger for this
+    // (see TotalMix FX 2.1 alpha 5 spec).
+    if (client_ != nullptr) {
+        if (!client_->isConnected()) {
+            client_->connect("127.0.0.1", txPort_);
+        }
+        osc::Message refresh("/sendall");
+        refresh.addFloat(1.0f);
+        client_->send(refresh);
+    }
+
     // Enabling: prime by pushing every currently-active track. Run() would
     // catch up on its next tick (~33 ms), but doing it eagerly avoids the
     // user-visible lag between enabling the mirror and TotalMix reflecting

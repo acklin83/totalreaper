@@ -16,7 +16,7 @@ in real time. Not yet ready for unattended production use.
 
 ---
 
-## What it does today (v0.1.4)
+## What it does today (v0.1.5)
 
 ### Routing mirror (the big one)
 
@@ -142,7 +142,7 @@ Or do it manually:
 Restart REAPER. You should see in the console (View → Show Console):
 
 ```
-[TotalReaper] v0.1.4 loaded — find actions in Action List by typing 'TotalReaper'
+[TotalReaper] v0.1.5 loaded — find actions in Action List by typing 'TotalReaper'
 ```
 
 ---
