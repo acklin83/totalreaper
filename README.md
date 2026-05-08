@@ -16,7 +16,7 @@ in real time. Not yet ready for unattended production use.
 
 ---
 
-## What it does today (v0.1.4)
+## What it does today (v0.1.5)
 
 ### Routing mirror (the big one)
 
@@ -97,7 +97,8 @@ and drop it in REAPER's UserPlugins folder, then restart REAPER:
 
 | Platform | Asset | Destination |
 |---|---|---|
-| macOS (arm64) | `reaper_totalreaper-arm64.dylib` | `~/Library/Application Support/REAPER/UserPlugins/` |
+| macOS (Apple Silicon) | `reaper_totalreaper-arm64.dylib` | `~/Library/Application Support/REAPER/UserPlugins/` |
+| macOS (Intel) | `reaper_totalreaper-x86_64.dylib` | `~/Library/Application Support/REAPER/UserPlugins/` |
 | Windows (x64) | `reaper_totalreaper.dll` | `%APPDATA%\REAPER\UserPlugins\` |
 
 The Windows DLL has the MSVC runtime statically linked, so you don't
@@ -142,7 +143,7 @@ Or do it manually:
 Restart REAPER. You should see in the console (View → Show Console):
 
 ```
-[TotalReaper] v0.1.4 loaded — find actions in Action List by typing 'TotalReaper'
+[TotalReaper] v0.1.5 loaded — find actions in Action List by typing 'TotalReaper'
 ```
 
 ---
