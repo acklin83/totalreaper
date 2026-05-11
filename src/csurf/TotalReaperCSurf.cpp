@@ -175,27 +175,20 @@ void TotalReaperCSurf::setEnabled(bool enabled) {
         return;
     }
 
-    // Ask TotalMix to re-emit every current parameter so our TotalMixState
-    // cache gets seeded for channel-strip controls (gain, 48v, pad, phase,
-    // mute) we haven't observed yet. Without this, the first preamp gain
-    // delta on a fresh track had to wait for the user to nudge the knob in
-    // TotalMix once. /sendall is the official Global OSC trigger for this
-    // (see TotalMix FX 2.1 alpha 5 spec).
-    if (client_ != nullptr) {
-        if (!client_->isConnected()) {
-            client_->connect("127.0.0.1", txPort_);
-        }
-        osc::Message refresh("/sendall");
-        refresh.addFloat(1.0f);
-        client_->send(refresh);
-    }
+    // Hold priming_ across the push + /sendall window. While set, 2-Way's rx
+    // path won't touch REAPER track state — it only seeds the echo cache.
+    // Without this, TotalMix's pre-push state (which is -∞ for any channel
+    // the user hadn't already routed) gets echoed back to us and 2-Way
+    // happily applies it, slamming every active REAPER fader to -∞.
+    priming_.store(true);
 
-    // Enabling: prime by pushing every currently-active track. Run() would
-    // catch up on its next tick (~33 ms), but doing it eagerly avoids the
-    // user-visible lag between enabling the mirror and TotalMix reflecting
-    // state. Tracks that aren't actively monitoring (default-input or
-    // explicitly muted-monitor) are left out of the cache so they don't
-    // push spurious -∞ values that overwrite the active tracks.
+    // Push REAPER state to TotalMix FIRST so lastSentFader_ is populated
+    // before any /sendall response arrives. Run() would catch up on its
+    // next tick (~33 ms), but doing it eagerly avoids the user-visible lag
+    // between enabling the mirror and TotalMix reflecting state. Tracks
+    // that aren't actively monitoring (default-input or explicitly
+    // muted-monitor) are left out so they don't push spurious -∞ values
+    // that overwrite the active tracks.
     states_.clear();
     const int trackCount = CountTracks(nullptr);
     for (int i = 0; i < trackCount; ++i) {
@@ -206,6 +199,38 @@ void TotalReaperCSurf::setEnabled(bool enabled) {
         if (recMon == 0 || hwStartChannel(recInput) < 0) continue;
         updateTrackRouting(tr);
     }
+
+    // Now ask TotalMix to re-emit every current parameter so our
+    // TotalMixState cache gets seeded for channel-strip controls (gain,
+    // 48v, pad, phase, mute) we haven't observed yet. Without this, the
+    // first preamp gain delta on a fresh track had to wait for the user to
+    // nudge the knob in TotalMix once. /sendall is the official Global OSC
+    // trigger for this (see TotalMix FX 2.1 alpha 5 spec).
+    //
+    // Order matters: /sendall AFTER the push so for every (hwIdx, bus) we
+    // care about, TotalMix's reported value is already the one we just
+    // pushed — the echo cache matches and 2-Way doesn't try to feed it
+    // back into REAPER.
+    if (client_ != nullptr) {
+        if (!client_->isConnected()) {
+            client_->connect("127.0.0.1", txPort_);
+        }
+        osc::Message refresh("/sendall");
+        refresh.addFloat(1.0f);
+        client_->send(refresh);
+    }
+
+    // Release the priming flag once the /sendall response burst has had
+    // time to land. 500 ms is heuristic but generous on localhost UDP.
+    // After release, the rxQueue is cleared so any pre-priming straggler
+    // doesn't fire on the next Run() tick.
+    scheduleAfter(500, [this]() {
+        {
+            std::lock_guard<std::mutex> g(rxMu_);
+            rxQueue_.clear();
+        }
+        priming_.store(false);
+    });
 }
 
 void TotalReaperCSurf::SetSurfaceVolume(MediaTrack* tr, double volume) {
@@ -603,6 +628,16 @@ void TotalReaperCSurf::onIncomingFader(int hwIdx, int bus, float db) {
     const EchoKey key = (hwIdx << 16) | bus;
     {
         std::lock_guard<std::mutex> g(rxMu_);
+        if (priming_.load()) {
+            // Routing-mirror just enabled — TotalMix is dumping its old
+            // state and our push is racing in parallel. Don't drive REAPER
+            // off these values; only seed the echo cache for combos we
+            // haven't pushed yet (try_emplace skips when push got there
+            // first). Any genuine user moves during this ~500 ms window are
+            // intentionally dropped.
+            lastSentFader_.try_emplace(key, db);
+            return;
+        }
         auto it = lastSentFader_.find(key);
         if (it != lastSentFader_.end() &&
             std::fabs(it->second - db) < kEchoFaderEpsilonDb) {
@@ -621,6 +656,10 @@ void TotalReaperCSurf::onIncomingBalpan(int hwIdx, int bus, float balpan) {
     const EchoKey key = (hwIdx << 16) | bus;
     {
         std::lock_guard<std::mutex> g(rxMu_);
+        if (priming_.load()) {
+            lastSentBalpan_.try_emplace(key, balpan);
+            return;
+        }
         auto it = lastSentBalpan_.find(key);
         if (it != lastSentBalpan_.end() &&
             std::fabs(it->second - balpan) < kEchoBalpanEpsilon) {

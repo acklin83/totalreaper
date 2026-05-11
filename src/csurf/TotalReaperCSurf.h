@@ -208,6 +208,14 @@ private:
     std::atomic<bool> twoWayEnabled_{false};      // additionally enable TotalMix → REAPER
     std::atomic<bool> autoTalkbackEnabled_{false}; // drive talkback from transport state
 
+    // Held true during the routing-mirror enable window so 2-Way's rx path
+    // doesn't snap REAPER faders to TotalMix's pre-push state. While set,
+    // onIncomingFader/Balpan only seed the echo cache (push values win via
+    // try_emplace), no apply happens. Cleared by a scheduleAfter ~500 ms
+    // after the push so the bulk of /sendall responses have time to arrive
+    // and be absorbed without disturbing REAPER track state.
+    std::atomic<bool> priming_{false};
+
     // Last "rolling" state SetPlayState was called with, so we only act on
     // genuine transitions (play→stop, stop→play). REAPER tends to fire
     // SetPlayState only on changes but it's cheap to dedupe and avoids any
