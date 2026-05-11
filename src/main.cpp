@@ -3,7 +3,8 @@
 // REAPER loads this plugin by calling ReaperPluginEntry with rec->caller_version
 // matching its own. We:
 //   1) Resolve API function pointers
-//   2) Register two actions (Toggle OSC Dump, Send Test Mute Input 1)
+//   2) Register every TotalReaper action (Toggle OSC Dump, Routing Mirror,
+//      2-Way Control, preamp/global commands, snapshot save/load slots 1-8)
 //   3) Hook the action dispatcher so REAPER calls back when the user runs them
 //   4) Stand up the OSC client/server objects
 //
@@ -21,6 +22,7 @@
 #include "reaper_plugin.h"
 
 #include <cstdint>
+#include <cstdio>
 #include <memory>
 
 namespace {
@@ -39,8 +41,9 @@ std::unique_ptr<totalreaper::csurf::TotalReaperCSurf> g_csurf;
 bool onAction2(KbdSectionInfo* /*sec*/, int command, int /*val*/, int /*val2*/,
                int /*relmode*/, HWND /*hwnd*/) {
     if (totalreaper::actions::runDumpOsc(command)) return true;
-    if (totalreaper::actions::runTestSend(command)) return true;
     if (totalreaper::actions::runToggleRoutingMirror(command)) return true;
+    if (totalreaper::actions::runToggleTwoWay(command)) return true;
+    if (totalreaper::actions::runToggleAutoTalkback(command)) return true;
     if (totalreaper::actions::runPreampAction(command)) return true;
     if (totalreaper::actions::runGlobalAction(command)) return true;
     return false;
@@ -130,13 +133,17 @@ REAPER_PLUGIN_DLL_EXPORT int ReaperPluginEntry(REAPER_PLUGIN_HINSTANCE /*hInstan
                    "TotalReaper: Toggle OSC Dump",
                    totalreaper::actions::dumpOscCommandId());
     registerAction(rec,
-                   "TOTALREAPER_TEST_SEND",
-                   "TotalReaper: Send Test Mute Input 1",
-                   totalreaper::actions::testSendCommandId());
-    registerAction(rec,
                    "TOTALREAPER_TOGGLE_ROUTING_MIRROR",
                    "TotalReaper: Toggle Routing Mirror",
                    totalreaper::actions::routingMirrorCommandId());
+    registerAction(rec,
+                   "TOTALREAPER_TOGGLE_TWO_WAY",
+                   "TotalReaper: Toggle 2-Way Control",
+                   totalreaper::actions::twoWayCommandId());
+    registerAction(rec,
+                   "TOTALREAPER_TOGGLE_AUTO_TALKBACK",
+                   "TotalReaper: Toggle Auto-Talkback on Stop",
+                   totalreaper::actions::autoTalkbackCommandId());
 
     registerAction(rec,
                    "TOTALREAPER_GAIN_INC",
@@ -167,14 +174,33 @@ REAPER_PLUGIN_DLL_EXPORT int ReaperPluginEntry(REAPER_PLUGIN_HINSTANCE /*hInstan
                    "TOTALREAPER_TOGGLE_TALKBACK",
                    "TotalReaper: Toggle Talkback",
                    totalreaper::actions::toggleTalkbackCommandId());
-    registerAction(rec,
-                   "TOTALREAPER_SNAPSHOT_SAVE",
-                   "TotalReaper: Save TotalMix snapshot for current project",
-                   totalreaper::actions::snapshotSaveCommandId());
-    registerAction(rec,
-                   "TOTALREAPER_SNAPSHOT_LOAD",
-                   "TotalReaper: Load TotalMix snapshot for current project",
-                   totalreaper::actions::snapshotLoadCommandId());
+
+    // Snapshot save/load — one action per TotalMix snapshot slot (1..8).
+    // Static buffers because registerAction stores the id-string pointer
+    // for the lifetime of the plugin.
+    static char snapSaveIds[8][32];
+    static char snapSaveNames[8][64];
+    static char snapLoadIds[8][32];
+    static char snapLoadNames[8][64];
+    for (int slot = 1; slot <= 8; ++slot) {
+        std::snprintf(snapSaveIds[slot - 1], sizeof(snapSaveIds[slot - 1]),
+                      "TOTALREAPER_SNAPSHOT_SAVE_%d", slot);
+        std::snprintf(snapSaveNames[slot - 1], sizeof(snapSaveNames[slot - 1]),
+                      "TotalReaper: Save TotalMix Snapshot Slot %d", slot);
+        registerAction(rec,
+                       snapSaveIds[slot - 1],
+                       snapSaveNames[slot - 1],
+                       totalreaper::actions::snapshotSaveCommandId(slot));
+
+        std::snprintf(snapLoadIds[slot - 1], sizeof(snapLoadIds[slot - 1]),
+                      "TOTALREAPER_SNAPSHOT_LOAD_%d", slot);
+        std::snprintf(snapLoadNames[slot - 1], sizeof(snapLoadNames[slot - 1]),
+                      "TotalReaper: Load TotalMix Snapshot Slot %d", slot);
+        registerAction(rec,
+                       snapLoadIds[slot - 1],
+                       snapLoadNames[slot - 1],
+                       totalreaper::actions::snapshotLoadCommandId(slot));
+    }
 
     // hookcommand2 (not hookcommand) — required for custom_action IDs.
     rec->Register("hookcommand2", reinterpret_cast<void*>(onAction2));
@@ -188,8 +214,20 @@ REAPER_PLUGIN_DLL_EXPORT int ReaperPluginEntry(REAPER_PLUGIN_HINSTANCE /*hInstan
             g_csurf->setEnabled(true);
         }
     }
+    if (HasExtState("TotalReaper", "TwoWayEnabled")) {
+        const char* v = GetExtState("TotalReaper", "TwoWayEnabled");
+        if (v && v[0] == '1') {
+            g_csurf->setTwoWayEnabled(true);
+        }
+    }
+    if (HasExtState("TotalReaper", "AutoTalkbackEnabled")) {
+        const char* v = GetExtState("TotalReaper", "AutoTalkbackEnabled");
+        if (v && v[0] == '1') {
+            g_csurf->setAutoTalkbackEnabled(true);
+        }
+    }
 
-    totalreaper::reaper::debugLog("[TotalReaper] v0.1.7 loaded — "
+    totalreaper::reaper::debugLog("[TotalReaper] loaded — "
                                   "find actions in Action List by typing 'TotalReaper'");
     return 1;
 }

@@ -16,7 +16,7 @@ in real time. Not yet ready for unattended production use.
 
 ---
 
-## What it does today (v0.1.7)
+## What it does today (v0.1.8)
 
 ### Routing mirror (the big one)
 
@@ -35,6 +35,12 @@ source of truth for the TotalMix input matrix:
 - Reacts live to input reassignment, send add/remove, and stereo-link
   changes.
 - Toggle state persists across REAPER restarts.
+
+**TotalReaper: Toggle 2-Way Control** — on top of the routing mirror, this
+toggle adds the reverse direction: moving a fader or balpan in TotalMix
+also moves the matching REAPER track / send. First REAPER track whose
+input maps to the hardware channel wins. Echo-suppression is value-based,
+so the loop stays stable.
 
 ### Per-track preamp control
 
@@ -59,20 +65,19 @@ Global TotalMix controls and project-state recall:
 
 - **TotalReaper: Toggle Talkback** — drives `/controlroom/talkback`. Bind
   to a footswitch via Stream Deck / SSL UF8 / keyboard shortcut.
-- **TotalReaper: Save TotalMix snapshot for current project** — writes
-  the current TotalMix state into snapshot slot 8 (reserved by convention
-  for TotalReaper). Slots 1–7 stay yours.
-- **TotalReaper: Load TotalMix snapshot for current project** — recalls
-  slot 8. Pair with project-open hook (manual for now) to bring the
-  hardware back to where you left it.
+- **TotalReaper: Toggle Auto-Talkback on Stop** — drives talkback from
+  REAPER's transport state. Stop/pause opens talkback, play/record closes
+  it. Toggling the action on while stopped opens talkback immediately;
+  toggling off closes it.
+- **TotalReaper: Save / Load TotalMix Snapshot Slot 1…8** — sixteen
+  actions, one save and one load per snapshot slot. Bind each to the key
+  you want for that slot.
 
 ### Diagnostics
 
 - **TotalReaper: Toggle OSC Dump** — listens on UDP 7002 and prints every
   incoming OSC message from TotalMix to the REAPER console. The original
   Phase 0 protocol-exploration tool, kept around for debugging.
-- **TotalReaper: Send Test Mute Input 1** — sends `/input/1/mute` to
-  TotalMix on UDP 7001. Sanity test for the TX path.
 
 Find all actions in REAPER's Action List by typing "TotalReaper".
 
@@ -160,7 +165,7 @@ Or do it manually:
 Restart REAPER. You should see in the console (View → Show Console):
 
 ```
-[TotalReaper] v0.1.7 loaded — find actions in Action List by typing 'TotalReaper'
+[TotalReaper] loaded — find actions in Action List by typing 'TotalReaper'
 ```
 
 ---
@@ -203,9 +208,11 @@ totalreaper/
 │   └── actions/
 │       ├── Actions.h
 │       ├── DumpOscAction.cpp
-│       ├── TestSendAction.cpp
 │       ├── RoutingMirrorAction.cpp
-│       └── PreampActions.cpp
+│       ├── TwoWayControlAction.cpp
+│       ├── AutoTalkbackAction.cpp
+│       ├── PreampActions.cpp
+│       └── GlobalActions.cpp
 ├── external/
 │   └── reaper-sdk/                 # git submodule
 ├── docs/

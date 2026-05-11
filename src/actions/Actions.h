@@ -1,8 +1,7 @@
 // Actions.h — Shared state and registration helpers for TotalReaper actions.
 //
-// The two MVP actions (DumpOscAction, TestSendAction) both operate on the
-// same OSC client/server pair. Rather than passing them around, the actions
-// pull from this shared accessor that main.cpp owns.
+// Actions all operate on the same OSC client/server pair. Rather than passing
+// them around, the actions pull from this shared accessor that main.cpp owns.
 
 #pragma once
 
@@ -26,8 +25,9 @@ osc::TotalMixState* totalMixState();
 
 // Action handlers — return true if the command was handled.
 bool runDumpOsc(int command);
-bool runTestSend(int command);
 bool runToggleRoutingMirror(int command);
+bool runToggleTwoWay(int command);
+bool runToggleAutoTalkback(int command);
 bool runPreampAction(int command);
 bool runGlobalAction(int command);
 
@@ -43,6 +43,12 @@ bool isDumpToConsoleActive();
 // the user toggles talkback inside TotalMix's UI.
 bool isTalkbackOn();
 
+// Reflects the toggle state of "Toggle 2-Way Control".
+bool isTwoWayEnabled();
+
+// Reflects the toggle state of "Toggle Auto-Talkback on Stop".
+bool isAutoTalkbackEnabled();
+
 // Toggle-state callback for "toggleaction" registration. Returns 1 if the
 // command's feature is currently on, 0 if off, -1 if the command isn't ours
 // or has no toggle state.
@@ -51,8 +57,9 @@ int toggleActionState(int command);
 // Command IDs are assigned dynamically by REAPER and stored after
 // registration. Actions check incoming command IDs against these.
 int& dumpOscCommandId();
-int& testSendCommandId();
 int& routingMirrorCommandId();
+int& twoWayCommandId();
+int& autoTalkbackCommandId();
 int& gainIncCommandId();
 int& gainDecCommandId();
 int& toggle48vCommandId();
@@ -60,7 +67,10 @@ int& togglePadCommandId();
 int& togglePhaseCommandId();
 int& toggleAutolevelCommandId();
 int& toggleTalkbackCommandId();
-int& snapshotSaveCommandId();
-int& snapshotLoadCommandId();
+
+// Snapshot slots 1..8 — index parameter is the 1-based slot number.
+// Out of range returns a reference to a static -1 sentinel.
+int& snapshotSaveCommandId(int slot);
+int& snapshotLoadCommandId(int slot);
 
 } // namespace totalreaper::actions

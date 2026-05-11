@@ -7,7 +7,7 @@ cmake_minimum_required(VERSION 3.20)
 cmake_policy(SET CMP0091 NEW)
 
 project(totalreaper
-    VERSION 0.1.7
+    VERSION 0.1.8
     DESCRIPTION "REAPER ↔ RME TotalMix FX Global OSC Bridge"
     LANGUAGES CXX
 )
@@ -61,8 +61,9 @@ set(SOURCES
     src/reaper/ReaperAPI.cpp
     src/reaper/ChannelMap.cpp
     src/actions/DumpOscAction.cpp
-    src/actions/TestSendAction.cpp
     src/actions/RoutingMirrorAction.cpp
+    src/actions/TwoWayControlAction.cpp
+    src/actions/AutoTalkbackAction.cpp
     src/actions/PreampActions.cpp
     src/actions/GlobalActions.cpp
     src/csurf/TotalReaperCSurf.cpp

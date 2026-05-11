@@ -28,9 +28,11 @@
 
 #include "reaper_plugin.h"
 
+#include <atomic>
 #include <chrono>
 #include <cstdint>
 #include <functional>
+#include <mutex>
 #include <unordered_map>
 #include <vector>
 
@@ -46,6 +48,7 @@ public:
     const char* GetConfigString() override { return ""; }
 
     void SetSurfaceVolume(MediaTrack* tr, double volume) override;
+    void SetPlayState(bool play, bool pause, bool rec) override;
     int Extended(int call, void* parm1, void* parm2, void* parm3) override;
 
     // Run() fires ~30×/sec. We poll track state here as a fallback because
@@ -58,7 +61,30 @@ public:
     // -∞ in TotalMix so REAPER no longer affects monitoring; the user's
     // pre-engagement TotalMix state is not restored (we don't snapshot).
     void setEnabled(bool enabled);
-    bool isEnabled() const noexcept { return enabled_; }
+    bool isEnabled() const noexcept { return enabled_.load(); }
+
+    // 2-Way Control: when on, incoming fader/balpan changes from TotalMix
+    // are mirrored back into REAPER track volume / send volume. Only takes
+    // effect while isEnabled() — without the outgoing direction active, the
+    // echo-suppression cache stays empty and we'd loop. Persisted in
+    // ExtState so the user's preference survives REAPER restarts.
+    void setTwoWayEnabled(bool enabled);
+    bool isTwoWayEnabled() const noexcept { return twoWayEnabled_.load(); }
+
+    // Auto-Talkback on Stop: when on, REAPER's transport state drives
+    // TotalMix talkback — stopped/paused opens talkback, play/record closes
+    // it. Persisted in ExtState. Like the other csurf-side toggles, only
+    // takes effect while isEnabled().
+    void setAutoTalkbackEnabled(bool enabled);
+    bool isAutoTalkbackEnabled() const noexcept { return autoTalkbackEnabled_.load(); }
+
+    // Called from the OSC receive thread when TotalMix reports a fader or
+    // balpan value for /mix/in/<hwIdx>/<bus>/{fader,balpan}. Performs
+    // echo-suppression against our own most-recent send and, if the value
+    // looks like a genuine TotalMix-side change, queues a main-thread
+    // callback to apply it to REAPER track state.
+    void onIncomingFader(int hwIdx, int bus, float db);
+    void onIncomingBalpan(int hwIdx, int bus, float balpan);
 
     // Schedule a callback to fire from Run() after `delayMs` milliseconds.
     // Used for sequencing operations like "mute → toggle pad → unmute" so
@@ -67,6 +93,11 @@ public:
     void scheduleAfter(int delayMs, std::function<void()> action);
 
 private:
+    // Send /controlroom/talkback to TotalMix and update the TalkbackOn
+    // ExtState. Used by SetPlayState (auto fires) and setAutoTalkbackEnabled
+    // (immediate apply on toggle).
+    void sendTalkback(bool on);
+
     // Reconcile one track's TotalMix routing with its current REAPER state.
     // Implements the state machine: only tracks that have been seen "active"
     // (monitor on with a hardware input) are kept in the cache; tracks that
@@ -136,9 +167,53 @@ private:
     };
     std::vector<Deferred> deferred_;
 
+    // Main-thread apply helpers used by drainRxQueue. Both run with REAPER
+    // API thread guarantees and re-check enabled_/twoWayEnabled_ since state
+    // can change between rx-thread enqueue and main-thread drain.
+    void applyIncomingFader(int hwIdx, int bus, float db);
+    void applyIncomingBalpan(int hwIdx, int bus, float balpan);
+
+    // Find the first track whose I_RECINPUT maps to exactly `hwIdx` as its
+    // left/start channel. Returns nullptr if none. "First" = lowest index in
+    // REAPER's track order — matches user expectation when multiple tracks
+    // share an input.
+    MediaTrack* findFirstTrackForHwIdx(int hwIdx);
+
+    // Look up the direct-send index on `source` whose destination track has
+    // a hardware output to `targetBus`. Returns -1 if no direct match
+    // (multi-hop sends are not addressed by 2-way for now).
+    int findDirectSendToBus(MediaTrack* source, int targetBus);
+
+    // Cache of the most recent fader/balpan value we sent on each (hwIdx,
+    // bus). Keyed by (hwIdx<<16)|bus. Read from rx thread, written from
+    // main thread → guarded by rxMu_.
+    using EchoKey = std::int32_t;
+    std::unordered_map<EchoKey, float> lastSentFader_;
+    std::unordered_map<EchoKey, float> lastSentBalpan_;
+
+    // Queue of main-thread callbacks produced by onIncoming*. Drained at
+    // the top of every Run() tick. Guarded by rxMu_.
+    std::vector<std::function<void()>> rxQueue_;
+
+    mutable std::mutex rxMu_;
+
+    // Echo-detection thresholds. TotalMix typically echoes our values back
+    // exactly, but we leave some slop for float quantisation paths.
+    static constexpr float kEchoFaderEpsilonDb = 0.05f;
+    static constexpr float kEchoBalpanEpsilon = 0.005f;
+
     osc::Client* client_;
     std::uint16_t txPort_;
-    bool enabled_ = false; // off by default — user opts in via the toggle action
+    std::atomic<bool> enabled_{false};            // routing-mirror direction (REAPER → TotalMix)
+    std::atomic<bool> twoWayEnabled_{false};      // additionally enable TotalMix → REAPER
+    std::atomic<bool> autoTalkbackEnabled_{false}; // drive talkback from transport state
+
+    // Last "rolling" state SetPlayState was called with, so we only act on
+    // genuine transitions (play→stop, stop→play). REAPER tends to fire
+    // SetPlayState only on changes but it's cheap to dedupe and avoids any
+    // surprise OSC chatter.
+    bool lastRolling_ = false;
+    bool lastRollingValid_ = false;
 };
 
 } // namespace totalreaper::csurf

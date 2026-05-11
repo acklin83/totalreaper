@@ -44,6 +44,12 @@ int toggleActionState(int command) {
     if (command == toggleTalkbackCommandId()) {
         return isTalkbackOn() ? 1 : 0;
     }
+    if (command == twoWayCommandId()) {
+        return isTwoWayEnabled() ? 1 : 0;
+    }
+    if (command == autoTalkbackCommandId()) {
+        return isAutoTalkbackEnabled() ? 1 : 0;
+    }
     return -1;
 }
 

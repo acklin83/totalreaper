@@ -1,15 +1,12 @@
 // GlobalActions.cpp — REAPER actions for global TotalMix state (not
-// per-track). Talkback toggle and snapshot save/load.
+// per-track). Talkback toggle and per-slot snapshot save/load.
 //
 // Talkback state lives in REAPER's global ExtState ("TotalReaper" namespace),
 // because TotalMix's talkback is one global flag — no per-track meaning.
 //
-// Snapshots map a TotalMix snapshot slot to "the state of the studio for
-// this REAPER project". By convention slot 8 is reserved for TotalReaper —
-// users keep slots 1-7 for their own. Save action writes slot 8 from the
-// current TotalMix state; load action reads slot 8 back. The slot number
-// itself is hardcoded for now; if the convention bites, we can promote it
-// to a Project ExtState later without breaking existing flows.
+// Snapshot slots 1..8 map directly to TotalMix's 8 snapshot slots. Save fires
+// /snapshot/save/<slot>, load fires /snapshot/load/<slot>. Slot numbering is
+// 1-based to match TotalMix's UI labelling.
 
 #include "Actions.h"
 
@@ -26,11 +23,12 @@ namespace {
 constexpr const char* kExtNamespace = "TotalReaper";
 constexpr const char* kExtTalkback  = "TalkbackOn";
 
-constexpr int kProjectSnapshotSlot = 8;
+constexpr int kSnapshotSlotCount = 8;
 
 int s_tTalkback = 0;
-int s_snapSave = 0;
-int s_snapLoad = 0;
+int s_snapSave[kSnapshotSlotCount] = {};
+int s_snapLoad[kSnapshotSlotCount] = {};
+int s_invalidId = -1;
 
 // Returns true if the routing mirror is active and we have a working OSC
 // path to TotalMix. Global actions are no-ops without a live mirror because
@@ -58,21 +56,19 @@ void runToggleTalkback() {
                 newOn ? "1" : "0", /*persist*/ true);
 }
 
-void runSnapshotSave() {
+void runSnapshotSave(int slot1Based) {
     if (!oscReady()) return;
     char path[48];
-    std::snprintf(path, sizeof(path), "/snapshot/save/%d",
-                  kProjectSnapshotSlot);
+    std::snprintf(path, sizeof(path), "/snapshot/save/%d", slot1Based);
     osc::Message m(path);
     m.addFloat(1.0f);
     oscClient()->send(m);
 }
 
-void runSnapshotLoad() {
+void runSnapshotLoad(int slot1Based) {
     if (!oscReady()) return;
     char path[48];
-    std::snprintf(path, sizeof(path), "/snapshot/load/%d",
-                  kProjectSnapshotSlot);
+    std::snprintf(path, sizeof(path), "/snapshot/load/%d", slot1Based);
     osc::Message m(path);
     m.addFloat(1.0f);
     oscClient()->send(m);
@@ -81,8 +77,16 @@ void runSnapshotLoad() {
 } // namespace
 
 int& toggleTalkbackCommandId() { return s_tTalkback; }
-int& snapshotSaveCommandId()   { return s_snapSave; }
-int& snapshotLoadCommandId()   { return s_snapLoad; }
+
+int& snapshotSaveCommandId(int slot) {
+    if (slot < 1 || slot > kSnapshotSlotCount) return s_invalidId;
+    return s_snapSave[slot - 1];
+}
+
+int& snapshotLoadCommandId(int slot) {
+    if (slot < 1 || slot > kSnapshotSlotCount) return s_invalidId;
+    return s_snapLoad[slot - 1];
+}
 
 bool isTalkbackOn() {
     if (!HasExtState(kExtNamespace, kExtTalkback)) return false;
@@ -91,9 +95,12 @@ bool isTalkbackOn() {
 }
 
 bool runGlobalAction(int command) {
+    if (command == 0) return false;
     if (command == s_tTalkback) { runToggleTalkback(); return true; }
-    if (command == s_snapSave)  { runSnapshotSave();   return true; }
-    if (command == s_snapLoad)  { runSnapshotLoad();   return true; }
+    for (int i = 0; i < kSnapshotSlotCount; ++i) {
+        if (command == s_snapSave[i]) { runSnapshotSave(i + 1); return true; }
+        if (command == s_snapLoad[i]) { runSnapshotLoad(i + 1); return true; }
+    }
     return false;
 }
 

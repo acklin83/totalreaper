@@ -148,8 +148,8 @@ TotalReaperCSurf::TotalReaperCSurf(osc::Client* client, std::uint16_t txPort)
     : client_(client), txPort_(txPort) {}
 
 void TotalReaperCSurf::setEnabled(bool enabled) {
-    if (enabled == enabled_) return;
-    enabled_ = enabled;
+    if (enabled == enabled_.load()) return;
+    enabled_.store(enabled);
     SetExtState("TotalReaper", "RoutingMirrorEnabled",
                 enabled ? "1" : "0", /*persist*/ true);
 
@@ -218,7 +218,7 @@ void TotalReaperCSurf::SetSurfaceVolume(MediaTrack* tr, double volume) {
     // change detection by re-reading D_VOL and comparing against the cache;
     // priming linVol up front would mask the change and processTrack would
     // skip the update.
-    if (!enabled_ || tr == nullptr) return;
+    if (!enabled_.load() || tr == nullptr) return;
     auto it = states_.find(tr);
     if (it == states_.end()) return;
     if (it->second.linVol == volume) return;
@@ -235,6 +235,16 @@ int TotalReaperCSurf::Extended(int call, void* parm1, void* /*parm2*/,
 }
 
 void TotalReaperCSurf::Run() {
+    // Drain rx-thread-queued 2-way work first so any track-state changes it
+    // makes are visible to processTrack on the same tick. Holding rxMu_ only
+    // for the swap keeps the rx thread unblocked while we execute.
+    std::vector<std::function<void()>> rxJobs;
+    {
+        std::lock_guard<std::mutex> g(rxMu_);
+        rxJobs.swap(rxQueue_);
+    }
+    for (auto& job : rxJobs) job();
+
     // Fire any deferred actions whose time has come, regardless of enabled
     // state — they were scheduled by code that already gated on enabled.
     if (!deferred_.empty()) {
@@ -250,7 +260,7 @@ void TotalReaperCSurf::Run() {
         }
     }
 
-    if (!enabled_) return;
+    if (!enabled_.load()) return;
     const int trackCount = CountTracks(nullptr);
     for (int i = 0; i < trackCount; ++i) {
         processTrack(GetTrack(nullptr, i));
@@ -327,7 +337,7 @@ void TotalReaperCSurf::processTrack(MediaTrack* tr) {
 void TotalReaperCSurf::updateTrackRouting(MediaTrack* tr) {
     // Master is excluded by processTrack (and fires here only via direct
     // calls during enable priming, where the caller has already filtered).
-    if (!enabled_ || tr == nullptr || tr == GetMasterTrack(nullptr) ||
+    if (!enabled_.load() || tr == nullptr || tr == GetMasterTrack(nullptr) ||
         client_ == nullptr) {
         return;
     }
@@ -491,6 +501,13 @@ void TotalReaperCSurf::sendFader(int reaperChannel, int bus, float db) {
     osc::Message msg(path);
     msg.addFloat(db);
     client_->send(msg);
+
+    // Remember what we just sent so a TotalMix echo on this (hwIdx, bus) is
+    // recognised as our own and ignored by onIncomingFader.
+    {
+        std::lock_guard<std::mutex> g(rxMu_);
+        lastSentFader_[(hwIdx << 16) | bus] = db;
+    }
 }
 
 void TotalReaperCSurf::sendBalpan(int reaperChannel, int bus, float balpan) {
@@ -508,6 +525,230 @@ void TotalReaperCSurf::sendBalpan(int reaperChannel, int bus, float balpan) {
     osc::Message msg(path);
     msg.addFloat(balpan);
     client_->send(msg);
+
+    {
+        std::lock_guard<std::mutex> g(rxMu_);
+        lastSentBalpan_[(hwIdx << 16) | bus] = balpan;
+    }
+}
+
+void TotalReaperCSurf::setTwoWayEnabled(bool enabled) {
+    if (enabled == twoWayEnabled_.load()) return;
+    twoWayEnabled_.store(enabled);
+    SetExtState("TotalReaper", "TwoWayEnabled",
+                enabled ? "1" : "0", /*persist*/ true);
+}
+
+void TotalReaperCSurf::setAutoTalkbackEnabled(bool enabled) {
+    if (enabled == autoTalkbackEnabled_.load()) return;
+    autoTalkbackEnabled_.store(enabled);
+    SetExtState("TotalReaper", "AutoTalkbackEnabled",
+                enabled ? "1" : "0", /*persist*/ true);
+    // Reset the dedupe baseline so the next transport event fires regardless
+    // of the previous transition direction — gives the user immediate
+    // feedback when they enable auto-talkback during playback.
+    lastRollingValid_ = false;
+
+    if (!enabled_.load()) return;
+
+    if (enabled) {
+        // First-time enable: if the transport is currently stopped/paused,
+        // open talkback right away so the user doesn't have to hit stop once
+        // to trigger the rule. If currently playing, leave talkback alone —
+        // the next stop will fire SetPlayState.
+        const int ps = GetPlayState();
+        const bool rolling = (ps & 1) != 0 && (ps & 2) == 0;
+        if (!rolling) sendTalkback(true);
+    } else {
+        // Disabling closes talkback so the engineer doesn't end up stuck
+        // broadcasting after toggling the feature off mid-session.
+        sendTalkback(false);
+    }
+}
+
+void TotalReaperCSurf::SetPlayState(bool play, bool pause, bool /*rec*/) {
+    if (!autoTalkbackEnabled_.load() || !enabled_.load()) return;
+
+    // "Rolling" = transport actively moving. Pause counts as not rolling so
+    // the engineer can still talk to the live room while paused.
+    const bool rolling = play && !pause;
+    if (lastRollingValid_ && rolling == lastRolling_) return;
+    lastRolling_ = rolling;
+    lastRollingValid_ = true;
+
+    sendTalkback(!rolling);
+}
+
+void TotalReaperCSurf::sendTalkback(bool on) {
+    if (client_ == nullptr) return;
+    if (!client_->isConnected()) {
+        client_->connect("127.0.0.1", txPort_);
+    }
+    osc::Message m("/controlroom/talkback");
+    m.addFloat(on ? 1.0f : 0.0f);
+    client_->send(m);
+
+    // Keep the manual-toggle ExtState in sync so the Toggle Talkback action's
+    // checkmark reflects reality after we drive talkback automatically.
+    SetExtState("TotalReaper", "TalkbackOn",
+                on ? "1" : "0", /*persist*/ true);
+}
+
+void TotalReaperCSurf::onIncomingFader(int hwIdx, int bus, float db) {
+    // Reject early on the rx thread so we don't allocate / queue work for
+    // every fader echo TotalMix emits when the user moves things in REAPER.
+    if (!twoWayEnabled_.load() || !enabled_.load()) return;
+    if (hwIdx < 0 || bus < 0) return;
+
+    const EchoKey key = (hwIdx << 16) | bus;
+    {
+        std::lock_guard<std::mutex> g(rxMu_);
+        auto it = lastSentFader_.find(key);
+        if (it != lastSentFader_.end() &&
+            std::fabs(it->second - db) < kEchoFaderEpsilonDb) {
+            return; // our own echo
+        }
+        rxQueue_.push_back([this, hwIdx, bus, db]() {
+            applyIncomingFader(hwIdx, bus, db);
+        });
+    }
+}
+
+void TotalReaperCSurf::onIncomingBalpan(int hwIdx, int bus, float balpan) {
+    if (!twoWayEnabled_.load() || !enabled_.load()) return;
+    if (hwIdx < 0 || bus < 0) return;
+
+    const EchoKey key = (hwIdx << 16) | bus;
+    {
+        std::lock_guard<std::mutex> g(rxMu_);
+        auto it = lastSentBalpan_.find(key);
+        if (it != lastSentBalpan_.end() &&
+            std::fabs(it->second - balpan) < kEchoBalpanEpsilon) {
+            return;
+        }
+        rxQueue_.push_back([this, hwIdx, bus, balpan]() {
+            applyIncomingBalpan(hwIdx, bus, balpan);
+        });
+    }
+}
+
+MediaTrack* TotalReaperCSurf::findFirstTrackForHwIdx(int hwIdx) {
+    // TotalMix-side addresses are hardware indices, REAPER-side I_RECINPUT
+    // stores REAPER-slot indices, and reaper.ini's [alias_in_*] map translates
+    // between them. sendFader applies that map on the way out; for the rx
+    // path we have to mirror it: translate each track's leftCh through the
+    // same alias map before comparing to the incoming hwIdx. Without this,
+    // every rx finds no matching track, applyIncomingFader no-ops, and
+    // processTrack subsequently re-sends the unchanged D_VOL → user's move
+    // in TotalMix snaps back.
+    const int trackCount = CountTracks(nullptr);
+    for (int i = 0; i < trackCount; ++i) {
+        MediaTrack* tr = GetTrack(nullptr, i);
+        if (tr == nullptr) continue;
+        const int recInput =
+            static_cast<int>(GetMediaTrackInfo_Value(tr, "I_RECINPUT"));
+        const int leftCh = hwStartChannel(recInput);
+        if (leftCh < 0) continue;
+        // The track owns leftCh (and leftCh+1 for stereo). For 2-way we only
+        // act on the primary (left) channel — rx for leftCh+1 falls through
+        // and is silently ignored.
+        if (reaper::reaperInputToHardware(leftCh) == hwIdx) return tr;
+    }
+    return nullptr;
+}
+
+int TotalReaperCSurf::findDirectSendToBus(MediaTrack* source, int targetBus) {
+    if (source == nullptr || targetBus < 0) return -1;
+    const int sendCount = GetTrackNumSends(source, 0);
+    for (int i = 0; i < sendCount; ++i) {
+        const bool muted =
+            GetTrackSendInfo_Value(source, 0, i, "B_MUTE") != 0;
+        if (muted) continue;
+        MediaTrack* dest = reinterpret_cast<MediaTrack*>(static_cast<intptr_t>(
+            static_cast<std::int64_t>(GetTrackSendInfo_Value(
+                source, 0, i, "P_DESTTRACK"))));
+        if (dest == nullptr) continue;
+        if (resolveHwOutBus(dest) == targetBus) return i;
+    }
+    return -1;
+}
+
+void TotalReaperCSurf::applyIncomingFader(int hwIdx, int bus, float db) {
+    if (!enabled_.load() || !twoWayEnabled_.load()) return;
+
+    MediaTrack* tr = findFirstTrackForHwIdx(hwIdx);
+    if (tr == nullptr) return;
+
+    // Pre-set the echo cache to the value we're about to drive REAPER to.
+    // processTrack will re-send the same value to TotalMix on the next tick;
+    // TotalMix will echo it back; the echo will match this cache entry and
+    // be suppressed inside onIncomingFader.
+    {
+        std::lock_guard<std::mutex> g(rxMu_);
+        lastSentFader_[(hwIdx << 16) | bus] = db;
+    }
+
+    const float clampedDb = (db > kMaxDb) ? kMaxDb : db;
+    const double linVol = (clampedDb <= kMinusInfDb + 1.0f)
+        ? 0.0
+        : std::pow(10.0, clampedDb / 20.0);
+
+    const int mainBus = resolveMainBusFromMaster();
+    if (bus == mainBus) {
+        SetMediaTrackInfo_Value(tr, "D_VOL", linVol);
+        return;
+    }
+
+    // Send-bus: scale the direct send leading from this track to `bus`. For
+    // post-fader sends (sendMode==0), the on-bus level = trackFader *
+    // sendVol; solving for sendVol so that the combined gain equals the
+    // user's incoming fader value. Pre-fader (1/2) is direct.
+    const int sendIdx = findDirectSendToBus(tr, bus);
+    if (sendIdx < 0) return; // multi-hop or unmapped send: not handled in v1
+
+    const int sendMode = static_cast<int>(
+        GetTrackSendInfo_Value(tr, 0, sendIdx, "I_SENDMODE"));
+    double sendVol;
+    if (sendMode == 0) {
+        const double trackVol = GetMediaTrackInfo_Value(tr, "D_VOL");
+        if (trackVol <= 1e-9) return; // can't recover sendVol when fader is -∞
+        sendVol = linVol / trackVol;
+    } else {
+        sendVol = linVol;
+    }
+    SetTrackSendInfo_Value(tr, 0, sendIdx, "D_VOL", sendVol);
+}
+
+void TotalReaperCSurf::applyIncomingBalpan(int hwIdx, int bus, float balpan) {
+    if (!enabled_.load() || !twoWayEnabled_.load()) return;
+
+    MediaTrack* tr = findFirstTrackForHwIdx(hwIdx);
+    if (tr == nullptr) return;
+
+    // For stereo inputs we don't send balpan to TotalMix (see pushInputRouting)
+    // so accepting it back here would create asymmetry; skip.
+    const int recInput =
+        static_cast<int>(GetMediaTrackInfo_Value(tr, "I_RECINPUT"));
+    if (isStereoInput(recInput)) return;
+
+    {
+        std::lock_guard<std::mutex> g(rxMu_);
+        lastSentBalpan_[(hwIdx << 16) | bus] = balpan;
+    }
+
+    const double clamped = (balpan < -1.0f) ? -1.0
+                          : (balpan > 1.0f) ?  1.0
+                          : static_cast<double>(balpan);
+
+    const int mainBus = resolveMainBusFromMaster();
+    if (bus == mainBus) {
+        SetMediaTrackInfo_Value(tr, "D_PAN", clamped);
+        return;
+    }
+
+    const int sendIdx = findDirectSendToBus(tr, bus);
+    if (sendIdx < 0) return;
+    SetTrackSendInfo_Value(tr, 0, sendIdx, "D_PAN", clamped);
 }
 
 } // namespace totalreaper::csurf

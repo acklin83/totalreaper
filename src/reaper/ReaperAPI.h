@@ -24,6 +24,7 @@
 #define REAPERAPI_WANT_GetExtState
 #define REAPERAPI_WANT_GetMasterTrack
 #define REAPERAPI_WANT_GetMediaTrackInfo_Value
+#define REAPERAPI_WANT_GetPlayState
 #define REAPERAPI_WANT_GetSelectedTrack
 #define REAPERAPI_WANT_GetSetMediaTrackInfo_String
 #define REAPERAPI_WANT_GetTrack
@@ -32,6 +33,7 @@
 #define REAPERAPI_WANT_HasExtState
 #define REAPERAPI_WANT_SetExtState
 #define REAPERAPI_WANT_SetMediaTrackInfo_Value
+#define REAPERAPI_WANT_SetTrackSendInfo_Value
 #define REAPERAPI_WANT_ShowConsoleMsg
 
 // Default include — gives extern declarations of every REAPER API function
