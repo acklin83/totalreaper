@@ -33,6 +33,7 @@
 #include <cstdint>
 #include <functional>
 #include <mutex>
+#include <string>
 #include <unordered_map>
 #include <vector>
 
@@ -85,6 +86,16 @@ public:
     // callback to apply it to REAPER track state.
     void onIncomingFader(int hwIdx, int bus, float db);
     void onIncomingBalpan(int hwIdx, int bus, float balpan);
+
+    // Called from the OSC receive thread when TotalMix reports a preamp
+    // value at /input/<hwIdx>/{48v,pad,phase,gain}. Mirrors the value
+    // into the matching REAPER track's P_EXT:totalreaper_<leaf> so any
+    // surface or script reading that cache (e.g. reaper-uf8's REC + RME
+    // value-line) reflects TotalMix-side changes immediately. Always
+    // ungated by twoWayEnabled_ — preamp state is descriptive metadata
+    // that doesn't conflict with REAPER state. `leaf` must be one of
+    // "48v" / "pad" / "phase" / "gain". Queues a main-thread apply.
+    void onIncomingPreamp(int hwIdx, const char* leaf, float value);
 
     // Schedule a callback to fire from Run() after `delayMs` milliseconds.
     // Used for sequencing operations like "mute → toggle pad → unmute" so
@@ -172,6 +183,15 @@ private:
     // can change between rx-thread enqueue and main-thread drain.
     void applyIncomingFader(int hwIdx, int bus, float db);
     void applyIncomingBalpan(int hwIdx, int bus, float balpan);
+
+    // Main-thread apply for preamp 48v/pad/phase/gain. Writes the
+    // formatted value (gain as decimal dB, flags as "0"/"1") to
+    // P_EXT:totalreaper_<leaf> on every REAPER track whose I_RECINPUT
+    // resolves to `hwIdx`. Iterates all tracks because multiple tracks
+    // can share the same hardware input — a 1-knob change in TotalMix
+    // should reflect on each of them.
+    void applyIncomingPreamp(int hwIdx, std::string extKey,
+                             std::string value);
 
     // Find the first track whose I_RECINPUT maps to exactly `hwIdx` as its
     // left/start channel. Returns nullptr if none. "First" = lowest index in

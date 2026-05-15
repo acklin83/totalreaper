@@ -12,7 +12,9 @@
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
+#include <cstring>
 #include <unordered_set>
+#include <utility>
 
 namespace totalreaper::csurf {
 
@@ -649,6 +651,38 @@ void TotalReaperCSurf::onIncomingFader(int hwIdx, int bus, float db) {
     }
 }
 
+void TotalReaperCSurf::onIncomingPreamp(int hwIdx, const char* leaf, float v) {
+    // Ungated by enabled_ / twoWayEnabled_ — preamp readbacks are
+    // metadata, not routing state. Caller wants P_EXT current whenever
+    // TotalMix emits, regardless of whether the routing mirror is on.
+    if (hwIdx < 0 || leaf == nullptr) return;
+
+    std::string extKey;
+    char valBuf[32];
+    if (std::strcmp(leaf, "gain") == 0) {
+        extKey = "P_EXT:totalreaper_gain";
+        std::snprintf(valBuf, sizeof(valBuf), "%.6f", v);
+    } else if (std::strcmp(leaf, "48v") == 0) {
+        extKey = "P_EXT:totalreaper_48v";
+        std::strcpy(valBuf, v >= 0.5f ? "1" : "0");
+    } else if (std::strcmp(leaf, "pad") == 0) {
+        extKey = "P_EXT:totalreaper_pad";
+        std::strcpy(valBuf, v >= 0.5f ? "1" : "0");
+    } else if (std::strcmp(leaf, "phase") == 0) {
+        extKey = "P_EXT:totalreaper_phase";
+        std::strcpy(valBuf, v >= 0.5f ? "1" : "0");
+    } else {
+        return;
+    }
+    std::string value(valBuf);
+    std::lock_guard<std::mutex> g(rxMu_);
+    rxQueue_.push_back([this, hwIdx,
+                        ek = std::move(extKey),
+                        val = std::move(value)]() {
+        applyIncomingPreamp(hwIdx, ek, val);
+    });
+}
+
 void TotalReaperCSurf::onIncomingBalpan(int hwIdx, int bus, float balpan) {
     if (!twoWayEnabled_.load() || !enabled_.load()) return;
     if (hwIdx < 0 || bus < 0) return;
@@ -710,6 +744,29 @@ int TotalReaperCSurf::findDirectSendToBus(MediaTrack* source, int targetBus) {
         if (resolveHwOutBus(dest) == targetBus) return i;
     }
     return -1;
+}
+
+void TotalReaperCSurf::applyIncomingPreamp(int hwIdx, std::string extKey,
+                                            std::string value) {
+    // Update P_EXT on every track that maps to this hwIdx (multiple
+    // tracks can share an input). REAPER's track API is main-thread
+    // only — this is called from drainRxQueue inside Run().
+    const int trackCount = CountTracks(nullptr);
+    for (int i = 0; i < trackCount; ++i) {
+        MediaTrack* tr = GetTrack(nullptr, i);
+        if (tr == nullptr) continue;
+        const int recInput =
+            static_cast<int>(GetMediaTrackInfo_Value(tr, "I_RECINPUT"));
+        const int leftCh = hwStartChannel(recInput);
+        if (leftCh < 0) continue;
+        if (reaper::reaperInputToHardware(leftCh) != hwIdx) continue;
+        // GetSetMediaTrackInfo_String's setNewValue=true wants a
+        // mutable char*; copy from our owned string buffer.
+        char buf[64];
+        std::strncpy(buf, value.c_str(), sizeof(buf) - 1);
+        buf[sizeof(buf) - 1] = '\0';
+        GetSetMediaTrackInfo_String(tr, extKey.c_str(), buf, true);
+    }
 }
 
 void TotalReaperCSurf::applyIncomingFader(int hwIdx, int bus, float db) {

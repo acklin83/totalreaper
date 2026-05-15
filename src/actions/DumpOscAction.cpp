@@ -63,6 +63,30 @@ bool parseMixInLeaf(const std::string& addr, int* outHwIdx, int* outBus,
     return true;
 }
 
+// Parse "/input/<hwIdx>/<leaf>" for the preamp leaves we mirror to P_EXT
+// (48v / pad / phase / gain). Returns true on a known leaf, fills hwIdx +
+// pointer-into-addr for `leaf`. Anything else (mute, stereo, …) returns
+// false so we don't churn rxQueue with irrelevant traffic.
+bool parseInputPreampLeaf(const std::string& addr, int* outHwIdx,
+                          const char** outLeaf) {
+    static constexpr char kPrefix[] = "/input/";
+    static constexpr std::size_t kPrefixLen = sizeof(kPrefix) - 1;
+    if (addr.compare(0, kPrefixLen, kPrefix) != 0) return false;
+
+    const char* p = addr.c_str() + kPrefixLen;
+    char* end = nullptr;
+    const long hwIdx = std::strtol(p, &end, 10);
+    if (end == p || *end != '/') return false;
+    const char* leaf = end + 1;
+    if (std::strcmp(leaf, "48v")   != 0 &&
+        std::strcmp(leaf, "pad")   != 0 &&
+        std::strcmp(leaf, "phase") != 0 &&
+        std::strcmp(leaf, "gain")  != 0) return false;
+    *outHwIdx = static_cast<int>(hwIdx);
+    *outLeaf = leaf;
+    return true;
+}
+
 // Extract the first float argument; returns false if the message has no
 // float in slot 0. TotalMix fader/balpan messages are always single-float.
 bool firstFloat(const osc::Message& m, float* out) {
@@ -99,6 +123,20 @@ void rxHandler(const osc::Message& m) {
         } else {
             csurfInstance()->onIncomingBalpan(hwIdx, bus, v);
         }
+        return;
+    }
+
+    // Preamp leaves are mirrored to P_EXT regardless of 2-Way Control —
+    // they're metadata, not routing state. Any surface or script that
+    // reads P_EXT:totalreaper_<flag> stays in sync with TotalMix-side
+    // changes (e.g. user toggles 48V in TotalMix's UI directly).
+    int hwIdx2 = 0;
+    const char* preampLeaf = nullptr;
+    if (csurfInstance() != nullptr &&
+        parseInputPreampLeaf(m.address(), &hwIdx2, &preampLeaf)) {
+        float v = 0.0f;
+        if (!firstFloat(m, &v)) return;
+        csurfInstance()->onIncomingPreamp(hwIdx2, preampLeaf, v);
     }
 }
 
