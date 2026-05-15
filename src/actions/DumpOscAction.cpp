@@ -146,9 +146,14 @@ bool runDumpOsc(int command) {
     if (command != s_dumpId) return false;
     const bool nowOn = !s_dumpToConsole.load();
     s_dumpToConsole.store(nowOn);
-    reaper::debugLog(nowOn
-                     ? "[TotalReaper] OSC dump → console ENABLED"
-                     : "[TotalReaper] OSC dump → console disabled");
+    // log() not debugLog() — release builds compile debugLog away, so
+    // toggling the action in a shipped build gave the user no visible
+    // confirmation that anything happened (Frank 2026-05-15 "habs
+    // gemacht, kein console output"). Always-on confirmation tells the
+    // user the toggle landed even when no incoming OSC follows.
+    reaper::log(nowOn
+                 ? "[TotalReaper] OSC dump → console ENABLED"
+                 : "[TotalReaper] OSC dump → console disabled");
     return true;
 }
 
