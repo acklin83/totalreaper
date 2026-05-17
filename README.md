@@ -91,6 +91,12 @@ Find all actions in REAPER's Action List by typing "TotalReaper".
    - In TotalMix: **Settings → OSC → Compatibility Mode → Global OSC**, then
      **Options → Enable OSC Control**.
    - Default ports: TotalMix RX 7001, TX 7002 (TotalReaper assumes these).
+   - **Settings → OSC → Details… → "Receive to hidden channels" must be
+     checked.** Otherwise TotalMix silently drops `/mix/in/<n>/<bus>/fader`
+     writes to any input row or output column that isn't in the current
+     layout — the routing mirror appears completely dead even though
+     TotalReaper is sending correctly. Default in some TotalMix versions
+     is OFF.
 
 2. **REAPER 6 or later**.
 
