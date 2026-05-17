@@ -7,7 +7,7 @@ cmake_minimum_required(VERSION 3.20)
 cmake_policy(SET CMP0091 NEW)
 
 project(totalreaper
-    VERSION 0.1.11
+    VERSION 0.1.12
     DESCRIPTION "REAPER ↔ RME TotalMix FX Global OSC Bridge"
     LANGUAGES CXX
 )

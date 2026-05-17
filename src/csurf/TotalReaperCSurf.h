@@ -199,6 +199,20 @@ private:
     // share an input.
     MediaTrack* findFirstTrackForHwIdx(int hwIdx);
 
+    // Returns true if `tr` is the elected "primary owner" for `hwIdx`.
+    // Election rule, in priority order:
+    //   1. The first track (lowest REAPER index) that is rec-armed AND
+    //      monitoring. Frank's convention: at most one such track per input
+    //      at any moment. This is the "active recording / monitoring" track.
+    //   2. Else the first track that is monitoring (recMon != 0). This
+    //      covers ordinary "I'm just listening to this input" usage where
+    //      the user hasn't rec-armed anything yet.
+    //   3. Else no primary — every track for this hwIdx is dormant.
+    // Only the primary drives the TotalMix matrix cells for its hwIdx;
+    // other tracks sharing the input are skipped so we don't get
+    // last-write-wins jitter or ambiguous mute semantics.
+    bool isPrimaryOwnerForHwIdx_(MediaTrack* tr, int hwIdx);
+
     // Look up the direct-send index on `source` whose destination track has
     // a hardware output to `targetBus`. Returns -1 if no direct match
     // (multi-hop sends are not addressed by 2-way for now).
@@ -210,6 +224,22 @@ private:
     using EchoKey = std::int32_t;
     std::unordered_map<EchoKey, float> lastSentFader_;
     std::unordered_map<EchoKey, float> lastSentBalpan_;
+
+    // Tick-level dedupe so multiple REAPER tracks sharing the same
+    // I_RECINPUT don't each push their own gain for the same (hwIdx, bus)
+    // matrix cell in one Run() tick — TotalMix can only hold one value per
+    // cell, and rapid-fire writes during a fader move visibly jitter the
+    // strip. processTrack stages here; Run() flushes once at the end. Last
+    // write wins so the user-visible cell stays at whatever the previous
+    // last-write-wins steady state was (avoid jumping to a different track's
+    // value on first tick after enable). Main thread only.
+    struct PendingFader { float db; };
+    struct PendingBalpan { float balpan; };
+    std::unordered_map<EchoKey, PendingFader>  tickFader_;
+    std::unordered_map<EchoKey, PendingBalpan> tickBalpan_;
+    // Flush tickFader_ / tickBalpan_ to the OSC client + lastSent caches +
+    // TX log. Called once at end of Run().
+    void flushTick_();
 
     // Queue of main-thread callbacks produced by onIncoming*. Drained at
     // the top of every Run() tick. Guarded by rxMu_.

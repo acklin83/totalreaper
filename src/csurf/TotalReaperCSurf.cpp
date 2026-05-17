@@ -2,8 +2,10 @@
 
 #include "TotalReaperCSurf.h"
 
+#include "../actions/Actions.h"
 #include "../osc/OscMessage.h"
 #include "../reaper/ChannelMap.h"
+#include "../reaper/Console.h"
 
 // reaper_plugin_functions.h declares the API function pointers as extern.
 // They're defined exactly once via REAPERAPI_IMPLEMENT in ReaperAPI.cpp.
@@ -13,10 +15,22 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <unordered_map>
 #include <unordered_set>
 #include <utility>
 
 namespace totalreaper::csurf {
+
+namespace {
+// TX log gate — piggybacks on the existing "Toggle OSC Dump" action so the
+// same toggle that surfaces RX traffic also surfaces TX. Logging is a
+// firehose during fader moves (one frame per 30 Hz tick × per bus); only
+// enable when actually debugging.
+void txLog(const osc::Message& m) {
+    if (!totalreaper::actions::isDumpToConsoleActive()) return;
+    reaper::log("[TX] " + m.toString());
+}
+} // namespace
 
 namespace {
 constexpr float kMinusInfDb = -300.0f; // TotalMix's -∞ sentinel value
@@ -174,6 +188,7 @@ void TotalReaperCSurf::setEnabled(bool enabled) {
             }
         }
         states_.clear();
+        flushTick_();
         return;
     }
 
@@ -198,9 +213,17 @@ void TotalReaperCSurf::setEnabled(bool enabled) {
         if (tr == nullptr) continue;
         const int recMon = static_cast<int>(GetMediaTrackInfo_Value(tr, "I_RECMON"));
         const int recInput = static_cast<int>(GetMediaTrackInfo_Value(tr, "I_RECINPUT"));
-        if (recMon == 0 || hwStartChannel(recInput) < 0) continue;
+        const bool muted = GetMediaTrackInfo_Value(tr, "B_MUTE") != 0;
+        const int hwIdx = hwStartChannel(recInput);
+        // Same gate processTrack uses — see comment there.
+        if (recMon == 0 || muted || hwIdx < 0) continue;
+        if (!isPrimaryOwnerForHwIdx_(tr, hwIdx)) continue;
         updateTrackRouting(tr);
     }
+    // Flush staged routings to TotalMix before the /sendall request goes out
+    // so lastSentFader_ / lastSentBalpan_ are populated against TotalMix's
+    // echo burst.
+    flushTick_();
 
     // Now ask TotalMix to re-emit every current parameter so our
     // TotalMixState cache gets seeded for channel-strip controls (gain,
@@ -220,6 +243,7 @@ void TotalReaperCSurf::setEnabled(bool enabled) {
         osc::Message refresh("/sendall");
         refresh.addFloat(1.0f);
         client_->send(refresh);
+        txLog(refresh);
     }
 
     // Release the priming flag once the /sendall response burst has had
@@ -292,6 +316,7 @@ void TotalReaperCSurf::Run() {
     for (int i = 0; i < trackCount; ++i) {
         processTrack(GetTrack(nullptr, i));
     }
+    flushTick_();
 }
 
 void TotalReaperCSurf::scheduleAfter(int delayMs,
@@ -302,12 +327,53 @@ void TotalReaperCSurf::scheduleAfter(int delayMs,
     });
 }
 
+bool TotalReaperCSurf::isPrimaryOwnerForHwIdx_(MediaTrack* tr, int hwIdx) {
+    if (hwIdx < 0 || tr == nullptr) return false;
+    const int trackCount = CountTracks(nullptr);
+    MediaTrack* armedPrimary = nullptr;
+    MediaTrack* monPrimary = nullptr;
+    for (int i = 0; i < trackCount; ++i) {
+        MediaTrack* t = GetTrack(nullptr, i);
+        if (t == nullptr) continue;
+        const int rIn = static_cast<int>(GetMediaTrackInfo_Value(t, "I_RECINPUT"));
+        if (hwStartChannel(rIn) != hwIdx) continue;
+        const int rMon = static_cast<int>(GetMediaTrackInfo_Value(t, "I_RECMON"));
+        if (rMon == 0) continue;
+        const int rArm = static_cast<int>(GetMediaTrackInfo_Value(t, "I_RECARM"));
+        if (rArm != 0) {
+            if (armedPrimary == nullptr) armedPrimary = t;
+            // Continue looping in case there's a rec-armed track at a lower
+            // index than the first monitor-only we already saw — but the
+            // first armed one wins regardless of monitor-only positions.
+        } else if (monPrimary == nullptr) {
+            monPrimary = t;
+        }
+    }
+    MediaTrack* primary = armedPrimary ? armedPrimary : monPrimary;
+    return tr == primary;
+}
+
 void TotalReaperCSurf::processTrack(MediaTrack* tr) {
     if (tr == nullptr || tr == GetMasterTrack(nullptr)) return;
 
     const int recInput = static_cast<int>(GetMediaTrackInfo_Value(tr, "I_RECINPUT"));
     const int recMon = static_cast<int>(GetMediaTrackInfo_Value(tr, "I_RECMON"));
-    const bool currActive = (recMon != 0 && hwStartChannel(recInput) >= 0);
+    const bool trackMuted = GetMediaTrackInfo_Value(tr, "B_MUTE") != 0;
+    const int hwIdx = hwStartChannel(recInput);
+    // "currently active" gate:
+    //   1. Valid hardware input (excludes MIDI / multichannel / no input).
+    //   2. Monitoring on (recMon != 0).
+    //   3. This track is the elected primary owner for its hwIdx — see
+    //      isPrimaryOwnerForHwIdx_. Tracks sharing an input that aren't the
+    //      primary are dormant: they don't push, they don't cache. If the
+    //      user rec-arms a different track and that becomes the new primary,
+    //      the old one transitions out via wasTracked && !currActive.
+    //   4. Not channel-muted — REAPER's mute button should silence the
+    //      matrix cells we own for this input.
+    const bool currActive = (hwIdx >= 0
+                          && recMon != 0
+                          && !trackMuted
+                          && isPrimaryOwnerForHwIdx_(tr, hwIdx));
 
     auto it = states_.find(tr);
     const bool wasTracked = (it != states_.end());
@@ -536,49 +602,60 @@ void TotalReaperCSurf::pushInputRouting(int recInput, int bus, float db,
 }
 
 void TotalReaperCSurf::sendFader(int reaperChannel, int bus, float db) {
-    if (client_ == nullptr || bus < 0) return;
+    if (bus < 0) return;
     if (reaperChannel < 0 || reaperChannel > kRecInputChannelMask) return;
 
     const int hwIdx = reaper::reaperInputToHardware(reaperChannel);
-
-    if (!client_->isConnected()) {
-        client_->connect("127.0.0.1", txPort_);
-    }
-
-    char path[64];
-    std::snprintf(path, sizeof(path), "/mix/in/%d/%d/fader", hwIdx, bus);
-    osc::Message msg(path);
-    msg.addFloat(db);
-    client_->send(msg);
-
-    // Remember what we just sent so a TotalMix echo on this (hwIdx, bus) is
-    // recognised as our own and ignored by onIncomingFader.
-    {
-        std::lock_guard<std::mutex> g(rxMu_);
-        lastSentFader_[(hwIdx << 16) | bus] = db;
-    }
+    // Stage into the tick map. Last write wins per (hwIdx, bus) so multiple
+    // tracks sharing the same input don't fire multiple OSC messages for
+    // the same matrix cell in one Run() tick — see flushTick_().
+    tickFader_[(hwIdx << 16) | bus] = PendingFader{db};
 }
 
 void TotalReaperCSurf::sendBalpan(int reaperChannel, int bus, float balpan) {
-    if (client_ == nullptr || bus < 0) return;
+    if (bus < 0) return;
     if (reaperChannel < 0 || reaperChannel > kRecInputChannelMask) return;
 
     const int hwIdx = reaper::reaperInputToHardware(reaperChannel);
+    tickBalpan_[(hwIdx << 16) | bus] = PendingBalpan{balpan};
+}
 
+void TotalReaperCSurf::flushTick_() {
+    if (client_ == nullptr) return;
+    if (tickFader_.empty() && tickBalpan_.empty()) return;
     if (!client_->isConnected()) {
         client_->connect("127.0.0.1", txPort_);
     }
-
-    char path[64];
-    std::snprintf(path, sizeof(path), "/mix/in/%d/%d/balpan", hwIdx, bus);
-    osc::Message msg(path);
-    msg.addFloat(balpan);
-    client_->send(msg);
-
-    {
-        std::lock_guard<std::mutex> g(rxMu_);
-        lastSentBalpan_[(hwIdx << 16) | bus] = balpan;
+    for (const auto& kv : tickFader_) {
+        const int hwIdx = kv.first >> 16;
+        const int bus   = kv.first & 0xFFFF;
+        char path[64];
+        std::snprintf(path, sizeof(path), "/mix/in/%d/%d/fader", hwIdx, bus);
+        osc::Message msg(path);
+        msg.addFloat(kv.second.db);
+        client_->send(msg);
+        txLog(msg);
+        {
+            std::lock_guard<std::mutex> g(rxMu_);
+            lastSentFader_[kv.first] = kv.second.db;
+        }
     }
+    tickFader_.clear();
+    for (const auto& kv : tickBalpan_) {
+        const int hwIdx = kv.first >> 16;
+        const int bus   = kv.first & 0xFFFF;
+        char path[64];
+        std::snprintf(path, sizeof(path), "/mix/in/%d/%d/balpan", hwIdx, bus);
+        osc::Message msg(path);
+        msg.addFloat(kv.second.balpan);
+        client_->send(msg);
+        txLog(msg);
+        {
+            std::lock_guard<std::mutex> g(rxMu_);
+            lastSentBalpan_[kv.first] = kv.second.balpan;
+        }
+    }
+    tickBalpan_.clear();
 }
 
 void TotalReaperCSurf::setTwoWayEnabled(bool enabled) {
@@ -636,6 +713,7 @@ void TotalReaperCSurf::sendTalkback(bool on) {
     osc::Message m("/controlroom/talkback");
     m.addFloat(on ? 1.0f : 0.0f);
     client_->send(m);
+    txLog(m);
 
     // Keep the manual-toggle ExtState in sync so the Toggle Talkback action's
     // checkmark reflects reality after we drive talkback automatically.
