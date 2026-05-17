@@ -327,15 +327,23 @@ void TotalReaperCSurf::processTrack(MediaTrack* tr) {
     if (wasTracked && it->second.recInput != recInput &&
         hwStartChannel(it->second.recInput) >= 0) {
         // Input was reassigned — close out everything on the OLD input
-        // (main bus + every cached send routing).
+        // (main bus + every cached send routing) AND drop the cache so
+        // the next updateTrackRouting diff doesn't mistake the OLD-input
+        // values for the NEW input's current state. Without the wipe,
+        // when the new input happens to have the same fader/pan as the
+        // old, the per-bus dedupe in updateTrackRouting skips the push
+        // and the NEW input's matrix cells on every walked bus (phones,
+        // etc.) stay at -∞ until something else perturbs them (Frank:
+        // "muss rec-arm getogglet werden bis phones folgen", 2026-05-17).
         const int mainBus = resolveMainBusFromMaster();
-        const TrackState& c = it->second;
+        TrackState& c = it->second;
         if (mainBus >= 0) {
             pushInputRouting(c.recInput, mainBus, kMinusInfDb, 0, 0, false);
         }
         for (const auto& r : c.sendRoutings) {
             pushInputRouting(c.recInput, r.bus, kMinusInfDb, 0, 0, false);
         }
+        c.sendRoutings.clear();
     }
 
     if (currActive) {
@@ -417,11 +425,14 @@ void TotalReaperCSurf::updateTrackRouting(MediaTrack* tr) {
     state.dualPanR = dualPanR;
     state.panMode = panMode;
 
+    // Compute the source track's pan once — used both for the main bus
+    // push and for composing pan into every walked routing below.
+    const PanPair p = computeInputPan(recInput, pan, width,
+                                      dualPanL, dualPanR, panMode);
+
     // Main bus: REAPER's master track HW out.
     const int mainBus = resolveMainBusFromMaster();
     if (mainBus >= 0) {
-        const PanPair p = computeInputPan(recInput, pan, width,
-                                          dualPanL, dualPanR, panMode);
         // Pan only meaningful while monitoring; when we're pushing -∞ we
         // don't fight any user adjustments to balpan in TotalMix.
         pushInputRouting(recInput, mainBus, mainDb, p.L, p.R, nowActive);
@@ -438,28 +449,39 @@ void TotalReaperCSurf::updateTrackRouting(MediaTrack* tr) {
 
     // Convert walked → CachedRouting (db, panL, panR) and push to TotalMix
     // anything that's new or changed.
+    //
+    // Pan composition: the source track's REAPER pan reaches every walked
+    // bus too — when the user pans a track in REAPER they expect the
+    // headphone cue (any hardware-routed downstream bus) to follow the
+    // pan, not just the main monitor. The first send's own pan is added
+    // on top as an offset. Pre-fader sends would technically skip the
+    // source-pan contribution; we don't distinguish here because pre-
+    // fader track-to-track sends are rare in monitoring setups and the
+    // cumulative-pan is what the user sees on REAPER's TCP.
     std::vector<CachedRouting> next;
     next.reserve(walked.size());
+    auto clamp1 = [](double v) -> float {
+        if (v < -1.0) v = -1.0; if (v > 1.0) v = 1.0;
+        return static_cast<float>(v);
+    };
     for (const auto& w : walked) {
-        if (w.bus == mainBus) continue; // main bus handled above; avoid duplicate
+        if (w.bus == mainBus) continue; // main bus handled above
         CachedRouting r;
         r.bus = w.bus;
         r.db = linToClampedDb(w.linGain);
-        r.hasPan = w.firstPanSet;
+        const double sendOffset = w.firstPanSet ? w.firstPan : 0.0;
         if (isStereoInput(recInput)) {
-            // Stereo source on a stereo dest bus: treat the (single) send pan
-            // as a balance offset, full-width by default.
-            const double sp = w.firstPanSet ? w.firstPan : 0.0;
-            float L = static_cast<float>(sp - 1.0);
-            float R = static_cast<float>(sp + 1.0);
-            if (L < -1.0f) L = -1.0f; if (L > 1.0f) L = 1.0f;
-            if (R < -1.0f) R = -1.0f; if (R > 1.0f) R = 1.0f;
-            r.panL = L;
-            r.panR = R;
+            // Source L/R from track pan + width, then offset by send pan.
+            r.panL = clamp1(p.L + sendOffset);
+            r.panR = clamp1(p.R + sendOffset);
         } else {
-            r.panL = static_cast<float>(w.firstPanSet ? w.firstPan : 0.0);
+            r.panL = clamp1(static_cast<double>(p.L) + sendOffset);
             r.panR = 0.0f;
         }
+        // Always assert balpan on the routing — TotalMix may hold a stale
+        // value from a previous routing or a manual user move; let the
+        // REAPER pan win on every bus we own.
+        r.hasPan = true;
         next.push_back(r);
     }
 
