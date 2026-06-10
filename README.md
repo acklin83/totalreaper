@@ -16,7 +16,10 @@ in real time. Not yet ready for unattended production use.
 
 ---
 
-## What it does today (v0.1.11)
+## What it does today (v0.2.0)
+
+> macOS (arm64 + Intel) and **Windows** (x64). Install via ReaPack or grab the
+> binary from the latest GitHub release.
 
 ### Routing mirror (the big one)
 
@@ -73,6 +76,29 @@ Global TotalMix controls and project-state recall:
   actions, one save and one load per snapshot slot. Bind each to the key
   you want for that slot.
 
+### Settings window (ReaImGui)
+
+**TotalReaper: Open Settings Window** opens a small panel for:
+
+- **OSC ports** (send to TotalMix / listen), configurable and applied live —
+  no restart.
+- **Feature toggles** for Routing Mirror, 2-Way Control, Auto-Talkback and
+  Stereo-Pair Link. These stay in sync with the matching actions and toolbar
+  icons.
+
+Needs [ReaImGui](https://github.com/cfillion/reaimgui) (install via *Extensions
+→ ReaPack → Browse packages*). Without it the window just reports that it's
+missing — every other feature works regardless.
+
+### Stereo-pair link
+
+With **Stereo-Pair Link** enabled (settings window), REAPER stereo inputs are
+linked as TotalMix stereo pairs. Switching the input back to mono unlinks the
+pair and re-centers the freed channel. Pan/balance and **stereo width**
+(`/input/<n>/width`) round-trip in both directions, with echo suppression so
+TotalMix's automatic hard-L/R reset on a link change doesn't fight your
+settings. Leave it off to keep TotalMix's own stereo/mono handling.
+
 ### Diagnostics
 
 - **TotalReaper: Toggle OSC Dump** — listens on UDP 7002 and prints every
@@ -99,6 +125,10 @@ Find all actions in REAPER's Action List by typing "TotalReaper".
      is OFF.
 
 2. **REAPER 6 or later**.
+
+1a. **ReaImGui** (optional) — only needed for the Settings window. Install via
+   *Extensions → ReaPack → Browse packages* → search *ReaImGui*. Everything
+   else works without it.
 
 3. **Build toolchain** (only if building from source — see Install below for pre-built binaries):
    - macOS: Xcode Command Line Tools, CMake 3.20+
