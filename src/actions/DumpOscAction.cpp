@@ -87,6 +87,21 @@ bool parseInputPreampLeaf(const std::string& addr, int* outHwIdx,
     return true;
 }
 
+// Parse "/input/<hwIdx>/width" — the stereo-width control of a linked pair.
+// Returns true and fills hwIdx on a match.
+bool parseInputWidth(const std::string& addr, int* outHwIdx) {
+    static constexpr char kPrefix[] = "/input/";
+    static constexpr std::size_t kPrefixLen = sizeof(kPrefix) - 1;
+    if (addr.compare(0, kPrefixLen, kPrefix) != 0) return false;
+    const char* p = addr.c_str() + kPrefixLen;
+    char* end = nullptr;
+    const long hwIdx = std::strtol(p, &end, 10);
+    if (end == p || *end != '/') return false;
+    if (std::strcmp(end + 1, "width") != 0) return false;
+    *outHwIdx = static_cast<int>(hwIdx);
+    return true;
+}
+
 // Extract the first float argument; returns false if the message has no
 // float in slot 0. TotalMix fader/balpan messages are always single-float.
 bool firstFloat(const osc::Message& m, float* out) {
@@ -123,6 +138,17 @@ void rxHandler(const osc::Message& m) {
         } else {
             csurfInstance()->onIncomingBalpan(hwIdx, bus, v);
         }
+        return;
+    }
+
+    // Stereo width is strip-level routing state (linked pairs) — gate on 2-Way
+    // like fader/balpan.
+    int widthHw = 0;
+    if (csurfInstance() != nullptr && csurfInstance()->isTwoWayEnabled() &&
+        parseInputWidth(m.address(), &widthHw)) {
+        float v = 0.0f;
+        if (!firstFloat(m, &v)) return;
+        csurfInstance()->onIncomingWidth(widthHw, v);
         return;
     }
 

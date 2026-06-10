@@ -64,6 +64,7 @@ even though MADI is digital — see hypotheses above.
 | `/input/<n>/phase` | float | 0.0 / 1.0 | Phase invert |
 | `/input/<n>/gain` | float | integer dB, observed 13–33 | Preamp gain. Stepwise in 1 dB increments — float type but integer values |
 | `/input/<n>/stereo` | float | 0.0 / 1.0 | Stereo link toggle. When set to 1, partner channel `<n+1>/stereo` fires too on un-linking |
+| `/input/<n>/width` | float | 0.0 … 1.0 | Stereo width of a linked pair (1.0 = full stereo, 0.0 = mono). Confirmed by dump 2026-06-10, addressed on the pair's left channel `<n>`. Maps to REAPER `D_WIDTH` (clamped 0…1; REAPER's negative/swap range has no TotalMix equivalent) |
 
 **Indexing for `/input/`**: 0-based absolute hardware channel index. Same
 `<n>` as the matrix namespace below.
@@ -164,7 +165,7 @@ The `<n>` index for playback is independent of the input index space.
 
 ## To verify in Phase 0
 
-- Width control on stereo channels — likely `/mix/in/<n>/<bus>/width`?
+- ~~Width control on stereo channels~~ — CONFIRMED `/input/<n>/width` (strip-level, not matrix). See table above.
 - Submix-mode toggle — global flag or per-bus?
 - DURec status and time messages (Alpha 4)
 - Snapshot recall / save

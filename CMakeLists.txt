@@ -7,7 +7,7 @@ cmake_minimum_required(VERSION 3.20)
 cmake_policy(SET CMP0091 NEW)
 
 project(totalreaper
-    VERSION 0.1.12
+    VERSION 0.2.0
     DESCRIPTION "REAPER ↔ RME TotalMix FX Global OSC Bridge"
     LANGUAGES CXX
 )
@@ -67,6 +67,7 @@ set(SOURCES
     src/actions/PreampActions.cpp
     src/actions/GlobalActions.cpp
     src/csurf/TotalReaperCSurf.cpp
+    src/ui/SettingsWindow.cpp
 )
 
 set(HEADERS
@@ -79,6 +80,7 @@ set(HEADERS
     src/reaper/Console.h
     src/actions/Actions.h
     src/csurf/TotalReaperCSurf.h
+    src/ui/SettingsWindow.h
 )
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -93,6 +95,7 @@ target_include_directories(reaper_totalreaper PRIVATE src)
 target_include_directories(reaper_totalreaper SYSTEM PRIVATE
     "${REAPER_SDK_DIR}/sdk"
     "${WDL_DIR}/WDL"
+    "${CMAKE_SOURCE_DIR}/external/reaimgui"
 )
 
 # Platform-specific networking and naming

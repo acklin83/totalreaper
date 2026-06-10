@@ -36,6 +36,18 @@ namespace {
 constexpr float kMinusInfDb = -300.0f; // TotalMix's -∞ sentinel value
 constexpr float kMaxDb = 6.0f;    // TotalMix input fader ceiling
 
+// Cached-pan sentinel — outside the valid [-1,1] balpan range so it never
+// equals a real value, forcing the next updateTrackRouting to re-push balpan.
+constexpr float kPanReassertSentinel = -2.0f;
+// Delay before re-asserting pan after a stereo-link toggle, so we land after
+// TotalMix's hard-L/R reset cascade.
+constexpr int kStereoPanReassertMs = 200;
+// How long to ignore incoming echoes for a pair's channels after a stereo
+// toggle, so TotalMix's reset cascade isn't fed back into REAPER via 2-Way.
+// Must outlast the re-assert above so the corrected values, not the reset,
+// are what finally seed the echo cache.
+constexpr int kStereoEchoMuteMs = 350;
+
 // I_RECINPUT bit layout (per reaper_plugin_functions.h):
 //   bit 4096 → MIDI input (we skip)
 //   bit 2048 → multichannel input (we skip for now)
@@ -119,6 +131,38 @@ PanPair computeInputPan(int recInput, double pan, double width,
 // pan. Multi-hop pan composition is not modelled.
 struct WalkRouting { int bus; double linGain; double firstPan; bool firstPanSet; };
 
+// Emit a routing for every hardware-output send (category 1) on `tr` — a cue
+// routed straight out a hardware output with no intermediate bus track, e.g.
+// a track sending directly to the RME phones channels. Gain folds the track
+// fader in per REAPER's send mode (post = fader*sendVol, pre = sendVol),
+// matching the track→track convention in walkSendChain; the destination
+// passes through the [alias_out_*] map exactly like resolveHwOutBus. Each
+// send carries its own pan as the routing's first-send pan.
+//
+// Only called for the SOURCE track. Downstream HW outs are handled by
+// walkSendChain's terminal branch, where the track's own fader is the
+// user-controlled TotalMix output fader and is deliberately excluded — here
+// the source fader IS the input level, so it belongs in the gain.
+void emitDirectHwSends(MediaTrack* tr, double pathLin,
+                       std::vector<WalkRouting>& out) {
+    const int hwSendCount = GetTrackNumSends(tr, 1);
+    if (hwSendCount <= 0) return;
+    const double trFader = GetMediaTrackInfo_Value(tr, "D_VOL");
+    for (int i = 0; i < hwSendCount; ++i) {
+        if (GetTrackSendInfo_Value(tr, 1, i, "B_MUTE") != 0) continue;
+        const int dstRaw = static_cast<int>(
+            GetTrackSendInfo_Value(tr, 1, i, "I_DSTCHAN"));
+        const int bus = reaper::reaperOutputToHardware(dstRaw & 0x3FF);
+        if (bus < 0) continue;
+        const double sendVol  = GetTrackSendInfo_Value(tr, 1, i, "D_VOL");
+        const double sendPan  = GetTrackSendInfo_Value(tr, 1, i, "D_PAN");
+        const int    sendMode = static_cast<int>(
+            GetTrackSendInfo_Value(tr, 1, i, "I_SENDMODE"));
+        const double gain = (sendMode == 0) ? trFader * sendVol : sendVol;
+        out.push_back({bus, pathLin * gain, sendPan, true});
+    }
+}
+
 void walkSendChain(MediaTrack* sourceTr, MediaTrack* current, double pathLin,
                    double firstPan, bool firstPanSet,
                    std::unordered_set<MediaTrack*>& visited,
@@ -134,6 +178,11 @@ void walkSendChain(MediaTrack* sourceTr, MediaTrack* current, double pathLin,
             visited.erase(current);
             return;
         }
+    } else {
+        // Source track: also mirror any cue sent straight out a hardware
+        // output (no intermediate bus track). This runs in addition to the
+        // track→track send walk below, so a track can feed phones both ways.
+        emitDirectHwSends(current, pathLin, out);
     }
 
     const double currFader = GetMediaTrackInfo_Value(current, "D_VOL");
@@ -188,6 +237,8 @@ void TotalReaperCSurf::setEnabled(bool enabled) {
             }
         }
         states_.clear();
+        stereoLinked_.clear();
+        { std::lock_guard<std::mutex> g(rxMu_); lastSentWidth_.clear(); }
         flushTick_();
         return;
     }
@@ -409,7 +460,32 @@ void TotalReaperCSurf::processTrack(MediaTrack* tr) {
         for (const auto& r : c.sendRoutings) {
             pushInputRouting(c.recInput, r.bus, kMinusInfDb, 0, 0, false);
         }
+        // If the OLD input was a stereo pair we linked, unlink it in TotalMix
+        // so a stale link doesn't outlive the routing, AND center the
+        // now-orphaned partner (right) channel so it doesn't stay hard-panned.
+        // Capture the pair's buses BEFORE clearing the cache below.
+        const int oldLeftCh = hwStartChannel(c.recInput);
+        const int oldLeftHw = reaper::reaperInputToHardware(oldLeftCh);
+        const bool wasLinked =
+            (oldLeftHw >= 0 && stereoLinked_.count(oldLeftHw) != 0);
+        std::vector<int> pairBuses;
+        if (wasLinked) {
+            if (mainBus >= 0) pairBuses.push_back(mainBus);
+            for (const auto& r : c.sendRoutings) pairBuses.push_back(r.bus);
+        }
         c.sendRoutings.clear();
+        if (wasLinked) {
+            sendStripStereo(oldLeftHw, false);
+            stereoLinked_.erase(oldLeftHw);
+            { std::lock_guard<std::mutex> g(rxMu_); lastSentWidth_.erase(oldLeftHw); }
+            // Center the partner channel once TotalMix's reset has settled.
+            const int partnerCh = oldLeftCh + 1;
+            scheduleAfter(kStereoPanReassertMs,
+                          [this, partnerCh, pairBuses]() {
+                for (int bus : pairBuses) sendBalpan(partnerCh, bus, 0.0f);
+                flushTick_();
+            });
+        }
     }
 
     if (currActive) {
@@ -496,6 +572,27 @@ void TotalReaperCSurf::updateTrackRouting(MediaTrack* tr) {
     const PanPair p = computeInputPan(recInput, pan, width,
                                       dualPanL, dualPanR, panMode);
 
+    // Stereo-pair link: when enabled, keep TotalMix's stereo-link state in sync
+    // with REAPER's input. A stereo input on the left of a hardware pair gets
+    // linked; if the user later switches that input back to mono we unlink it
+    // again. stereoLinked_ holds the left hw channels we've actually linked.
+    if (stereoPairLink_.load() && nowActive) {
+        const int leftHw = reaper::reaperInputToHardware(hwStartChannel(recInput));
+        if (leftHw >= 0) {
+            const bool stereo = isStereoInput(recInput);
+            const bool linked = stereoLinked_.count(leftHw) != 0;
+            if (stereo && !linked && (leftHw & 1) == 0) { // TotalMix pairs even+odd
+                sendStripStereo(leftHw, true);
+                stereoLinked_.insert(leftHw);
+            } else if (!stereo && linked) {
+                // Input went stereo → mono in REAPER: unlink the TotalMix pair.
+                sendStripStereo(leftHw, false);
+                stereoLinked_.erase(leftHw);
+                { std::lock_guard<std::mutex> g(rxMu_); lastSentWidth_.erase(leftHw); }
+            }
+        }
+    }
+
     // Main bus: REAPER's master track HW out.
     const int mainBus = resolveMainBusFromMaster();
     if (mainBus >= 0) {
@@ -548,6 +645,9 @@ void TotalReaperCSurf::updateTrackRouting(MediaTrack* tr) {
         // value from a previous routing or a manual user move; let the
         // REAPER pan win on every bus we own.
         r.hasPan = true;
+        // Single composed balance for the linked-stereo case (track pan +
+        // send pan); ignored for split/mono which use panL/panR above.
+        r.balance = clamp1(static_cast<double>(pan) + sendOffset);
         next.push_back(r);
     }
 
@@ -576,6 +676,41 @@ void TotalReaperCSurf::updateTrackRouting(MediaTrack* tr) {
     }
 
     state.sendRoutings = std::move(next);
+
+    // Linked stereo pairs: TotalMix shows ONE balance for the pair (and wipes
+    // it to hard L/R when the link toggles). pushInputRouting deliberately
+    // skips balpan for stereo inputs (correct for SPLIT strips), so a linked
+    // pair would otherwise never follow REAPER's pan. Assert the pair balance
+    // here every tick — REAPER's track pan maps to the strip balance — sent to
+    // the LEFT channel only (a linked strip has a single balpan; sending to
+    // both halves would fight). Continuous re-send also overrides TotalMix's
+    // post-toggle hard-L/R reset without a race.
+    if (stereoPairLink_.load() && nowActive && isStereoInput(recInput)) {
+        const int leftReaperCh = hwStartChannel(recInput);
+        const int leftHw = reaper::reaperInputToHardware(leftReaperCh);
+        if (leftHw >= 0 && stereoLinked_.count(leftHw) != 0) {
+            // Main bus = track pan; each send bus = its composed balance
+            // (track pan + that send's pan), matching the mono model so a
+            // TotalMix-side send-pan change round-trips and holds.
+            if (mainBus >= 0) sendBalpan(leftReaperCh, mainBus, clamp1(pan));
+            for (const auto& r : state.sendRoutings) {
+                sendBalpan(leftReaperCh, r.bus, r.balance);
+            }
+            // Stereo width → /input/<leftHw>/width (0..1). Deduped (and the
+            // dedupe doubles as the echo cache) so it isn't part of the
+            // per-tick fader/balpan stream.
+            float tmWidth = static_cast<float>(width);
+            if (tmWidth < 0.0f) tmWidth = 0.0f;
+            if (tmWidth > 1.0f) tmWidth = 1.0f;
+            std::lock_guard<std::mutex> g(rxMu_);
+            auto wit = lastSentWidth_.find(leftHw);
+            if (wit == lastSentWidth_.end() ||
+                std::fabs(wit->second - tmWidth) > 0.001f) {
+                lastSentWidth_[leftHw] = tmWidth;
+                sendStripWidth(leftHw, tmWidth);
+            }
+        }
+    }
 }
 
 void TotalReaperCSurf::pushInputRouting(int recInput, int bus, float db,
@@ -721,6 +856,81 @@ void TotalReaperCSurf::sendTalkback(bool on) {
                 on ? "1" : "0", /*persist*/ true);
 }
 
+void TotalReaperCSurf::setStereoPairLink(bool enabled) {
+    if (enabled == stereoPairLink_.load()) return;
+    stereoPairLink_.store(enabled);
+    SetExtState("TotalReaper", "StereoPairLink", enabled ? "1" : "0",
+                /*persist*/ true);
+    // Re-arm: drop the per-channel cache so toggling on re-sends links on the
+    // next tick. No auto-unlink on toggle-off (link-only by design).
+    stereoLinked_.clear();
+    { std::lock_guard<std::mutex> g(rxMu_); lastSentWidth_.clear(); }
+}
+
+bool TotalReaperCSurf::stereoEchoMutedLocked_(int hwIdx) {
+    auto it = stereoEchoMute_.find(hwIdx);
+    if (it == stereoEchoMute_.end()) return false;
+    if (std::chrono::steady_clock::now() < it->second) return true;
+    stereoEchoMute_.erase(it); // window expired
+    return false;
+}
+
+void TotalReaperCSurf::sendStripStereo(int hwIdx, bool on) {
+    if (client_ == nullptr || hwIdx < 0) return;
+    if (!client_->isConnected()) {
+        client_->connect("127.0.0.1", txPort_);
+    }
+    char path[64];
+    std::snprintf(path, sizeof(path), "/input/%d/stereo", hwIdx);
+    osc::Message m(path);
+    m.addFloat(on ? 1.0f : 0.0f);
+    client_->send(m);
+    txLog(m);
+
+    // Mute incoming echoes for BOTH channels of the pair for a short window so
+    // TotalMix's hard-L/R reset cascade isn't written into REAPER's pan/volume
+    // via 2-Way (would otherwise corrupt the now-mono input's track pan).
+    {
+        std::lock_guard<std::mutex> g(rxMu_);
+        const auto deadline = std::chrono::steady_clock::now() +
+            std::chrono::milliseconds(kStereoEchoMuteMs);
+        stereoEchoMute_[hwIdx] = deadline;
+        stereoEchoMute_[hwIdx + 1] = deadline;
+    }
+
+    // TotalMix resets balpan to hard L/R on every routed bus as a side effect
+    // of a stereo-link toggle. The main bus self-heals (its balpan is re-sent
+    // every tick), but per-bus send routings are pan-deduped and would stay at
+    // hard L/R. Re-assert REAPER's pan AFTER the reset settles: deferred so it
+    // lands after TotalMix's toggle cascade, then invalidate the per-bus pan
+    // dedupe so the next Run() tick re-pushes balpan for this input.
+    scheduleAfter(kStereoPanReassertMs, [this, hwIdx]() {
+        for (auto& kv : states_) {
+            TrackState& st = kv.second;
+            if (reaper::reaperInputToHardware(hwStartChannel(st.recInput)) != hwIdx) {
+                continue;
+            }
+            for (auto& r : st.sendRoutings) {
+                r.panL = kPanReassertSentinel;
+                r.panR = kPanReassertSentinel;
+            }
+        }
+    });
+}
+
+void TotalReaperCSurf::sendStripWidth(int hwIdx, float width) {
+    if (client_ == nullptr || hwIdx < 0) return;
+    if (!client_->isConnected()) {
+        client_->connect("127.0.0.1", txPort_);
+    }
+    char path[64];
+    std::snprintf(path, sizeof(path), "/input/%d/width", hwIdx);
+    osc::Message m(path);
+    m.addFloat(width);
+    client_->send(m);
+    txLog(m);
+}
+
 void TotalReaperCSurf::onIncomingFader(int hwIdx, int bus, float db) {
     // Reject early on the rx thread so we don't allocate / queue work for
     // every fader echo TotalMix emits when the user moves things in REAPER.
@@ -730,6 +940,9 @@ void TotalReaperCSurf::onIncomingFader(int hwIdx, int bus, float db) {
     const EchoKey key = (hwIdx << 16) | bus;
     {
         std::lock_guard<std::mutex> g(rxMu_);
+        // Swallow TotalMix's reset cascade right after a stereo-link toggle so
+        // it isn't written back into REAPER (would corrupt the input's level).
+        if (stereoEchoMutedLocked_(hwIdx)) return;
         if (priming_.load()) {
             // Routing-mirror just enabled — TotalMix is dumping its old
             // state and our push is racing in parallel. Don't drive REAPER
@@ -790,6 +1003,9 @@ void TotalReaperCSurf::onIncomingBalpan(int hwIdx, int bus, float balpan) {
     const EchoKey key = (hwIdx << 16) | bus;
     {
         std::lock_guard<std::mutex> g(rxMu_);
+        // Swallow TotalMix's hard-L/R reset cascade right after a stereo-link
+        // toggle so 2-Way doesn't write it into REAPER's track/send pan.
+        if (stereoEchoMutedLocked_(hwIdx)) return;
         if (priming_.load()) {
             lastSentBalpan_.try_emplace(key, balpan);
             return;
@@ -801,6 +1017,27 @@ void TotalReaperCSurf::onIncomingBalpan(int hwIdx, int bus, float balpan) {
         }
         rxQueue_.push_back([this, hwIdx, bus, balpan]() {
             applyIncomingBalpan(hwIdx, bus, balpan);
+        });
+    }
+}
+
+void TotalReaperCSurf::onIncomingWidth(int hwIdx, float width) {
+    if (!twoWayEnabled_.load() || !enabled_.load()) return;
+    if (hwIdx < 0) return;
+    {
+        std::lock_guard<std::mutex> g(rxMu_);
+        if (stereoEchoMutedLocked_(hwIdx)) return;
+        if (priming_.load()) {
+            lastSentWidth_[hwIdx] = width;
+            return;
+        }
+        auto it = lastSentWidth_.find(hwIdx);
+        if (it != lastSentWidth_.end() &&
+            std::fabs(it->second - width) < 0.005f) {
+            return; // our own echo
+        }
+        rxQueue_.push_back([this, hwIdx, width]() {
+            applyIncomingWidth(hwIdx, width);
         });
     }
 }
@@ -830,10 +1067,12 @@ MediaTrack* TotalReaperCSurf::findFirstTrackForHwIdx(int hwIdx) {
     return nullptr;
 }
 
-int TotalReaperCSurf::findDirectSendToBus(MediaTrack* source, int targetBus) {
-    if (source == nullptr || targetBus < 0) return -1;
-    const int sendCount = GetTrackNumSends(source, 0);
-    for (int i = 0; i < sendCount; ++i) {
+TotalReaperCSurf::LocatedSend
+TotalReaperCSurf::findDirectSendToBus(MediaTrack* source, int targetBus) {
+    if (source == nullptr || targetBus < 0) return {-1, -1};
+    // Track→track send whose destination track carries a HW out to targetBus.
+    const int trkSends = GetTrackNumSends(source, 0);
+    for (int i = 0; i < trkSends; ++i) {
         const bool muted =
             GetTrackSendInfo_Value(source, 0, i, "B_MUTE") != 0;
         if (muted) continue;
@@ -841,9 +1080,19 @@ int TotalReaperCSurf::findDirectSendToBus(MediaTrack* source, int targetBus) {
             static_cast<std::int64_t>(GetTrackSendInfo_Value(
                 source, 0, i, "P_DESTTRACK"))));
         if (dest == nullptr) continue;
-        if (resolveHwOutBus(dest) == targetBus) return i;
+        if (resolveHwOutBus(dest) == targetBus) return {0, i};
     }
-    return -1;
+    // Direct hardware-output send on the source track itself (mirrors the
+    // forward-path emitDirectHwSends so the cue is editable both ways).
+    const int hwSends = GetTrackNumSends(source, 1);
+    for (int i = 0; i < hwSends; ++i) {
+        if (GetTrackSendInfo_Value(source, 1, i, "B_MUTE") != 0) continue;
+        const int dstRaw = static_cast<int>(
+            GetTrackSendInfo_Value(source, 1, i, "I_DSTCHAN"));
+        if (reaper::reaperOutputToHardware(dstRaw & 0x3FF) == targetBus)
+            return {1, i};
+    }
+    return {-1, -1};
 }
 
 void TotalReaperCSurf::applyIncomingPreamp(int hwIdx, std::string extKey,
@@ -895,15 +1144,16 @@ void TotalReaperCSurf::applyIncomingFader(int hwIdx, int bus, float db) {
         return;
     }
 
-    // Send-bus: scale the direct send leading from this track to `bus`. For
-    // post-fader sends (sendMode==0), the on-bus level = trackFader *
-    // sendVol; solving for sendVol so that the combined gain equals the
-    // user's incoming fader value. Pre-fader (1/2) is direct.
-    const int sendIdx = findDirectSendToBus(tr, bus);
-    if (sendIdx < 0) return; // multi-hop or unmapped send: not handled in v1
+    // Send-bus: scale the direct send leading from this track to `bus` —
+    // either a track→track send or a direct hardware-output send (same cue,
+    // two topologies). For post-fader sends (sendMode==0), the on-bus level =
+    // trackFader * sendVol; solving for sendVol so the combined gain equals
+    // the user's incoming fader value. Pre-fader (1/2) is direct.
+    const LocatedSend send = findDirectSendToBus(tr, bus);
+    if (send.index < 0) return; // multi-hop or unmapped send: not handled in v1
 
     const int sendMode = static_cast<int>(
-        GetTrackSendInfo_Value(tr, 0, sendIdx, "I_SENDMODE"));
+        GetTrackSendInfo_Value(tr, send.category, send.index, "I_SENDMODE"));
     double sendVol;
     if (sendMode == 0) {
         const double trackVol = GetMediaTrackInfo_Value(tr, "D_VOL");
@@ -912,7 +1162,7 @@ void TotalReaperCSurf::applyIncomingFader(int hwIdx, int bus, float db) {
     } else {
         sendVol = linVol;
     }
-    SetTrackSendInfo_Value(tr, 0, sendIdx, "D_VOL", sendVol);
+    SetTrackSendInfo_Value(tr, send.category, send.index, "D_VOL", sendVol);
 }
 
 void TotalReaperCSurf::applyIncomingBalpan(int hwIdx, int bus, float balpan) {
@@ -921,11 +1171,13 @@ void TotalReaperCSurf::applyIncomingBalpan(int hwIdx, int bus, float balpan) {
     MediaTrack* tr = findFirstTrackForHwIdx(hwIdx);
     if (tr == nullptr) return;
 
-    // For stereo inputs we don't send balpan to TotalMix (see pushInputRouting)
-    // so accepting it back here would create asymmetry; skip.
     const int recInput =
         static_cast<int>(GetMediaTrackInfo_Value(tr, "I_RECINPUT"));
-    if (isStereoInput(recInput)) return;
+    // Split stereo strips are left to TotalMix's own hard-L/R handling — we
+    // don't send balpan for them, so don't accept it back either. LINKED pairs
+    // DO round-trip: we send the pair balance every tick, so map an incoming
+    // balance change back onto the stereo track's pan.
+    if (isStereoInput(recInput) && stereoLinked_.count(hwIdx) == 0) return;
 
     {
         std::lock_guard<std::mutex> g(rxMu_);
@@ -942,9 +1194,36 @@ void TotalReaperCSurf::applyIncomingBalpan(int hwIdx, int bus, float balpan) {
         return;
     }
 
-    const int sendIdx = findDirectSendToBus(tr, bus);
-    if (sendIdx < 0) return;
-    SetTrackSendInfo_Value(tr, 0, sendIdx, "D_PAN", clamped);
+    const LocatedSend send = findDirectSendToBus(tr, bus);
+    if (send.index < 0) return;
+    // The bus balance we send forward is the composed track pan + send pan, so
+    // invert that here: the send's own pan is the target minus the track pan.
+    // Otherwise the forward path re-adds the track pan and the user's TotalMix
+    // move snaps back.
+    const double trackPan = GetMediaTrackInfo_Value(tr, "D_PAN");
+    double sendPan = clamped - trackPan;
+    if (sendPan < -1.0) sendPan = -1.0;
+    if (sendPan >  1.0) sendPan =  1.0;
+    SetTrackSendInfo_Value(tr, send.category, send.index, "D_PAN", sendPan);
+}
+
+void TotalReaperCSurf::applyIncomingWidth(int hwIdx, float width) {
+    if (!enabled_.load() || !twoWayEnabled_.load()) return;
+    // Width only applies to pairs we manage as a linked stereo strip.
+    if (stereoLinked_.count(hwIdx) == 0) return;
+    MediaTrack* tr = findFirstTrackForHwIdx(hwIdx);
+    if (tr == nullptr) return;
+    const int recInput =
+        static_cast<int>(GetMediaTrackInfo_Value(tr, "I_RECINPUT"));
+    if (!isStereoInput(recInput)) return;
+
+    {
+        std::lock_guard<std::mutex> g(rxMu_);
+        lastSentWidth_[hwIdx] = width; // suppress our own re-echo next tick
+    }
+    double w = (width < 0.0f) ? 0.0 : (width > 1.0f) ? 1.0
+                                                     : static_cast<double>(width);
+    SetMediaTrackInfo_Value(tr, "D_WIDTH", w);
 }
 
 } // namespace totalreaper::csurf

@@ -31,6 +31,7 @@
 #define REAPERAPI_WANT_GetTrackNumSends
 #define REAPERAPI_WANT_GetTrackSendInfo_Value
 #define REAPERAPI_WANT_HasExtState
+#define REAPERAPI_WANT_RefreshToolbar2
 #define REAPERAPI_WANT_SetExtState
 #define REAPERAPI_WANT_SetMediaTrackInfo_Value
 #define REAPERAPI_WANT_SetTrackSendInfo_Value

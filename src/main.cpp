@@ -18,11 +18,13 @@
 #include "reaper/ChannelMap.h"
 #include "reaper/Console.h"
 #include "reaper/ReaperAPI.h"
+#include "ui/SettingsWindow.h"
 
 #include "reaper_plugin.h"
 
 #include <cstdint>
 #include <cstdio>
+#include <cstdlib>
 #include <memory>
 
 namespace {
@@ -35,6 +37,25 @@ std::unique_ptr<totalreaper::osc::Server> g_server;
 std::unique_ptr<totalreaper::osc::TotalMixState> g_state;
 std::unique_ptr<totalreaper::csurf::TotalReaperCSurf> g_csurf;
 
+// Saved so we can unregister the settings-window timer on unload (rec is null
+// in the unload call, so we can't use rec->Register there).
+int (*g_pluginRegister)(const char*, void*) = nullptr;
+
+// Pumps the ReaImGui settings window. Registered as a REAPER "timer" so it
+// runs on the main thread ~30×/sec; it's a cheap no-op while the window is
+// closed.
+void settingsTimerTick() { totalreaper::ui::tick(); }
+
+// Read a persisted port from ExtState, falling back to `def` when unset or
+// out of range.
+std::uint16_t readPort(const char* key, std::uint16_t def) {
+    if (!HasExtState("TotalReaper", key)) return def;
+    const char* v = GetExtState("TotalReaper", key);
+    if (v == nullptr || v[0] == '\0') return def;
+    const int n = std::atoi(v);
+    return (n >= 1 && n <= 65535) ? static_cast<std::uint16_t>(n) : def;
+}
+
 // hookcommand2 is required for actions registered via "custom_action" (per
 // REAPER SDK reaper_plugin.h). Old "hookcommand" only fires for built-in /
 // gaccel actions and never sees our custom command IDs.
@@ -46,12 +67,16 @@ bool onAction2(KbdSectionInfo* /*sec*/, int command, int /*val*/, int /*val2*/,
     if (totalreaper::actions::runToggleAutoTalkback(command)) return true;
     if (totalreaper::actions::runPreampAction(command)) return true;
     if (totalreaper::actions::runGlobalAction(command)) return true;
+    if (totalreaper::ui::runOpenSettings(command)) return true;
     return false;
 }
 
 // Toggle-state callback — gives REAPER the current on/off state for actions
 // that have one, so the Action List shows a checkmark.
 int onToggleAction(int command) {
+    if (command == totalreaper::ui::openSettingsCommandId()) {
+        return totalreaper::ui::isSettingsWindowOpen() ? 1 : 0;
+    }
     return totalreaper::actions::toggleActionState(command);
 }
 
@@ -82,6 +107,10 @@ REAPER_PLUGIN_DLL_EXPORT int ReaperPluginEntry(REAPER_PLUGIN_HINSTANCE /*hInstan
                                                reaper_plugin_info_t* rec) {
     if (rec == nullptr) {
         // Plugin is being unloaded
+        if (g_pluginRegister != nullptr) {
+            g_pluginRegister("-timer", reinterpret_cast<void*>(settingsTimerTick));
+        }
+        totalreaper::ui::shutdown();
         if (g_csurf) {
             // REAPER doesn't expose an unregister-by-instance API; the cleanest
             // we can do on unload is destroy the object. REAPER stops calling
@@ -112,20 +141,32 @@ REAPER_PLUGIN_DLL_EXPORT int ReaperPluginEntry(REAPER_PLUGIN_HINSTANCE /*hInstan
     // start sending updates immediately. The receive server runs from now
     // on, populating the TotalMix state cache that relative actions (like
     // preamp gain delta) depend on for an accurate baseline.
+    // OSC ports are user-configurable (settings window) and persisted in
+    // ExtState; fall back to the standard TotalMix defaults when unset.
+    const std::uint16_t sendPort = readPort("OscSendPort", kTotalMixRxPort);
+    const std::uint16_t listenPort = readPort("OscListenPort", kTotalReaperListenPort);
+
     g_client = std::make_unique<totalreaper::osc::Client>();
-    g_client->connect("127.0.0.1", kTotalMixRxPort);
+    g_client->connect("127.0.0.1", sendPort);
     g_server = std::make_unique<totalreaper::osc::Server>();
     g_state = std::make_unique<totalreaper::osc::TotalMixState>();
     totalreaper::actions::setOscClient(g_client.get());
     totalreaper::actions::setOscServer(g_server.get());
     totalreaper::actions::setTotalMixState(g_state.get());
-    g_server->start(kTotalReaperListenPort, &totalreaper::actions::rxHandler);
+    g_server->start(listenPort, &totalreaper::actions::rxHandler);
 
     // Install the control surface that mirrors REAPER track state to TotalMix.
     g_csurf = std::make_unique<totalreaper::csurf::TotalReaperCSurf>(
-        g_client.get(), kTotalMixRxPort);
+        g_client.get(), sendPort);
     rec->Register("csurf_inst", g_csurf.get());
     totalreaper::actions::setCsurf(g_csurf.get());
+
+    // Wire up the (optional) ReaImGui settings window. ReaImGui is resolved
+    // LAZILY on first open — not here — because other extensions' APIs aren't
+    // reliably registered yet during our ReaperPluginEntry.
+    g_pluginRegister = rec->Register;
+    totalreaper::ui::setGetFunc(rec->GetFunc);
+    totalreaper::ui::setContext(g_client.get(), g_server.get(), g_csurf.get());
 
     // Register actions
     registerAction(rec,
@@ -144,6 +185,10 @@ REAPER_PLUGIN_DLL_EXPORT int ReaperPluginEntry(REAPER_PLUGIN_HINSTANCE /*hInstan
                    "TOTALREAPER_TOGGLE_AUTO_TALKBACK",
                    "TotalReaper: Toggle Auto-Talkback on Stop",
                    totalreaper::actions::autoTalkbackCommandId());
+    registerAction(rec,
+                   "TOTALREAPER_OPEN_SETTINGS",
+                   "TotalReaper: Open Settings Window",
+                   totalreaper::ui::openSettingsCommandId());
 
     registerAction(rec,
                    "TOTALREAPER_GAIN_INC",
@@ -206,6 +251,10 @@ REAPER_PLUGIN_DLL_EXPORT int ReaperPluginEntry(REAPER_PLUGIN_HINSTANCE /*hInstan
     rec->Register("hookcommand2", reinterpret_cast<void*>(onAction2));
     rec->Register("toggleaction", reinterpret_cast<void*>(onToggleAction));
 
+    // Drive the settings window from a main-thread timer (~30 Hz). No-op while
+    // the window is closed.
+    rec->Register("timer", reinterpret_cast<void*>(settingsTimerTick));
+
     // Restore the routing mirror's persisted on/off state so the user's
     // last choice survives REAPER restarts.
     if (HasExtState("TotalReaper", "RoutingMirrorEnabled")) {
@@ -224,6 +273,12 @@ REAPER_PLUGIN_DLL_EXPORT int ReaperPluginEntry(REAPER_PLUGIN_HINSTANCE /*hInstan
         const char* v = GetExtState("TotalReaper", "AutoTalkbackEnabled");
         if (v && v[0] == '1') {
             g_csurf->setAutoTalkbackEnabled(true);
+        }
+    }
+    if (HasExtState("TotalReaper", "StereoPairLink")) {
+        const char* v = GetExtState("TotalReaper", "StereoPairLink");
+        if (v && v[0] == '1') {
+            g_csurf->setStereoPairLink(true);
         }
     }
 

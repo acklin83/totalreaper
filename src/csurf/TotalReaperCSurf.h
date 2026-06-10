@@ -8,6 +8,10 @@
 //      recursively, multiplying intermediate track faders for post-fader
 //      sends, so Track A → Track B → Track C (HW out) projects A's input
 //      onto C's bus at gain f_A * sendVol_AB * f_B * sendVol_BC.
+//   3. Direct hardware-output sends on the track itself (e.g. a cue sent
+//      straight to the RME phones channels with no intermediate bus track).
+//      Same per-bus routing as (2); gain folds the track fader in per the
+//      send mode (post = f * sendVol, pre = sendVol).
 //
 // We do NOT mirror destination track faders to TotalMix output bus volumes —
 // those are user/external-controller territory (e.g. more_me.html).
@@ -35,6 +39,7 @@
 #include <mutex>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 namespace totalreaper::csurf {
@@ -79,6 +84,18 @@ public:
     void setAutoTalkbackEnabled(bool enabled);
     bool isAutoTalkbackEnabled() const noexcept { return autoTalkbackEnabled_.load(); }
 
+    // Live OSC send-port change (settings window). The next flush reconnects
+    // the client to this port; the caller also reconnects the shared client.
+    // Main-thread only.
+    void setTxPort(std::uint16_t port) noexcept { txPort_ = port; }
+
+    // Stereo-pair link: when on, REAPER stereo inputs ask TotalMix to link
+    // their two hardware channels into one stereo strip. Link-only — turning
+    // it off does NOT auto-unlink (that would rearrange the user's layout).
+    // Persisted in ExtState.
+    void setStereoPairLink(bool enabled);
+    bool isStereoPairLink() const noexcept { return stereoPairLink_.load(); }
+
     // Called from the OSC receive thread when TotalMix reports a fader or
     // balpan value for /mix/in/<hwIdx>/<bus>/{fader,balpan}. Performs
     // echo-suppression against our own most-recent send and, if the value
@@ -86,6 +103,11 @@ public:
     // callback to apply it to REAPER track state.
     void onIncomingFader(int hwIdx, int bus, float db);
     void onIncomingBalpan(int hwIdx, int bus, float balpan);
+
+    // Called from the OSC receive thread for /input/<hwIdx>/width — the
+    // stereo-width control of a linked pair. Echo-suppressed and queued like
+    // fader/balpan; only acted on for linked stereo inputs.
+    void onIncomingWidth(int hwIdx, float width);
 
     // Called from the OSC receive thread when TotalMix reports a preamp
     // value at /input/<hwIdx>/{48v,pad,phase,gain}. Mirrors the value
@@ -138,6 +160,17 @@ private:
     // right) for one device channel on a specific bus.
     void sendBalpan(int reaperChannel, int bus, float balpan);
 
+    // Strip-level: send /input/<hwIdx>/stereo (1 = link the pair, 0 = unlink).
+    // Sent immediately, not tick-staged — stereo-link changes are rare.
+    void sendStripStereo(int hwIdx, bool on);
+
+    // Strip-level: send /input/<hwIdx>/width (0.0 = mono … 1.0 = full stereo).
+    void sendStripWidth(int hwIdx, float width);
+
+    // True if incoming echoes for hwIdx are within the post-stereo-toggle mute
+    // window. MUST be called with rxMu_ held; lazily evicts expired entries.
+    bool stereoEchoMutedLocked_(int hwIdx);
+
     // One TotalMix routing this track currently drives (besides the main
     // bus). Cached so we know what to close out when a routing disappears.
     struct CachedRouting {
@@ -146,6 +179,9 @@ private:
         float panL = 0.0f;
         float panR = 0.0f;
         bool hasPan = false;
+        // Single composed balance (track pan + send pan) for this bus, used
+        // when the input is a LINKED stereo pair (one balpan, not L/R).
+        float balance = 0.0f;
     };
 
     // Per-track state cache so Run() can detect changes and avoid re-sending
@@ -183,6 +219,9 @@ private:
     // can change between rx-thread enqueue and main-thread drain.
     void applyIncomingFader(int hwIdx, int bus, float db);
     void applyIncomingBalpan(int hwIdx, int bus, float balpan);
+    // Main-thread apply for /input/<hwIdx>/width → REAPER track D_WIDTH. Only
+    // affects tracks whose input is a linked stereo pair.
+    void applyIncomingWidth(int hwIdx, float width);
 
     // Main-thread apply for preamp 48v/pad/phase/gain. Writes the
     // formatted value (gain as decimal dB, flags as "0"/"1") to
@@ -213,10 +252,17 @@ private:
     // last-write-wins jitter or ambiguous mute semantics.
     bool isPrimaryOwnerForHwIdx_(MediaTrack* tr, int hwIdx);
 
-    // Look up the direct-send index on `source` whose destination track has
-    // a hardware output to `targetBus`. Returns -1 if no direct match
-    // (multi-hop sends are not addressed by 2-way for now).
-    int findDirectSendToBus(MediaTrack* source, int targetBus);
+    // A send located on a source track for the 2-way write-back path:
+    // which category (0 = track→track, 1 = direct hardware output) and its
+    // index. {-1, -1} when no match.
+    struct LocatedSend { int category; int index; };
+
+    // Look up a send on `source` that reaches `targetBus` — either a
+    // track→track send whose destination track has a hardware output to that
+    // bus, or a direct hardware-output send on `source` itself. Track→track
+    // is preferred (checked first). Multi-hop sends are not addressed by
+    // 2-way for now; returns {-1, -1} if no direct match.
+    LocatedSend findDirectSendToBus(MediaTrack* source, int targetBus);
 
     // Cache of the most recent fader/balpan value we sent on each (hwIdx,
     // bus). Keyed by (hwIdx<<16)|bus. Read from rx thread, written from
@@ -224,6 +270,10 @@ private:
     using EchoKey = std::int32_t;
     std::unordered_map<EchoKey, float> lastSentFader_;
     std::unordered_map<EchoKey, float> lastSentBalpan_;
+    // Last stereo-width we sent per left hw channel — doubles as the dedupe
+    // (don't re-send unchanged) and the echo cache (ignore TotalMix echoing
+    // our own value back). Keyed by hwIdx. Guarded by rxMu_.
+    std::unordered_map<int, float> lastSentWidth_;
 
     // Tick-level dedupe so multiple REAPER tracks sharing the same
     // I_RECINPUT don't each push their own gain for the same (hwIdx, bus)
@@ -257,6 +307,19 @@ private:
     std::atomic<bool> enabled_{false};            // routing-mirror direction (REAPER → TotalMix)
     std::atomic<bool> twoWayEnabled_{false};      // additionally enable TotalMix → REAPER
     std::atomic<bool> autoTalkbackEnabled_{false}; // drive talkback from transport state
+    std::atomic<bool> stereoPairLink_{false};      // link REAPER stereo inputs in TotalMix
+
+    // Left hardware channels we've already sent a stereo-link for, so we don't
+    // re-send every tick. Cleared on mirror-disable and on link-off. Written
+    // and read only on the main thread (Run/updateTrackRouting).
+    std::unordered_set<int> stereoLinked_;
+
+    // Per-hwIdx deadline until which incoming fader/balpan echoes are ignored.
+    // Set when we toggle a stereo link (for the pair's both channels) so
+    // TotalMix's hard-L/R reset cascade isn't written back into REAPER via
+    // 2-Way. Written on the main thread, read on the rx thread — guarded by
+    // rxMu_.
+    std::unordered_map<int, std::chrono::steady_clock::time_point> stereoEchoMute_;
 
     // Held true during the routing-mirror enable window so 2-Way's rx path
     // doesn't snap REAPER faders to TotalMix's pre-push state. While set,
