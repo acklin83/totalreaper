@@ -227,6 +227,7 @@ void TotalReaperCSurf::setEnabled(bool enabled) {
         for (const auto& [tr, state] : states_) {
             if (mainBus >= 0) {
                 pushInputRouting(state.recInput, mainBus, kMinusInfDb, 0, 0, false);
+                pushInputSolo(state.recInput, mainBus, false);
             }
             for (const auto& r : state.sendRoutings) {
                 pushInputRouting(state.recInput, r.bus, kMinusInfDb, 0, 0, false);
@@ -456,6 +457,7 @@ void TotalReaperCSurf::processTrack(MediaTrack* tr) {
         TrackState& c = it->second;
         if (mainBus >= 0) {
             pushInputRouting(c.recInput, mainBus, kMinusInfDb, 0, 0, false);
+            pushInputSolo(c.recInput, mainBus, false);
         }
         for (const auto& r : c.sendRoutings) {
             pushInputRouting(c.recInput, r.bus, kMinusInfDb, 0, 0, false);
@@ -496,6 +498,7 @@ void TotalReaperCSurf::processTrack(MediaTrack* tr) {
         const int mainBus = resolveMainBusFromMaster();
         if (hwStartChannel(recInput) >= 0 && mainBus >= 0) {
             pushInputRouting(recInput, mainBus, kMinusInfDb, 0, 0, false);
+            pushInputSolo(recInput, mainBus, false);
         }
         if (wasTracked) {
             for (const auto& r : it->second.sendRoutings) {
@@ -599,6 +602,15 @@ void TotalReaperCSurf::updateTrackRouting(MediaTrack* tr) {
         // Pan only meaningful while monitoring; when we're pushing -∞ we
         // don't fight any user adjustments to balpan in TotalMix.
         pushInputRouting(recInput, mainBus, mainDb, p.L, p.R, nowActive);
+        // Solo: REAPER's track solo → TotalMix main-out solo for this input.
+        // Main bus only (per Frank) — cue/phones submixes stay untouched, so
+        // the soloed track dims the others on the main out but each phones mix
+        // keeps its own balance. Forced to 0 whenever the channel isn't
+        // actively monitoring, so a stale solo=1 can't silence the whole main
+        // bus with nothing audibly soloed.
+        const bool soloOn =
+            nowActive && (GetMediaTrackInfo_Value(tr, "I_SOLO") != 0);
+        pushInputSolo(recInput, mainBus, soloOn);
     }
 
     // Send routings: walk the source's audio sends to find every HW bus its
@@ -755,9 +767,26 @@ void TotalReaperCSurf::sendBalpan(int reaperChannel, int bus, float balpan) {
     tickBalpan_[(hwIdx << 16) | bus] = PendingBalpan{balpan};
 }
 
+void TotalReaperCSurf::sendSolo(int reaperChannel, int bus, bool on) {
+    if (bus < 0) return;
+    if (reaperChannel < 0 || reaperChannel > kRecInputChannelMask) return;
+
+    const int hwIdx = reaper::reaperInputToHardware(reaperChannel);
+    tickSolo_[(hwIdx << 16) | bus] = PendingSolo{on};
+}
+
+void TotalReaperCSurf::pushInputSolo(int recInput, int bus, bool on) {
+    const int leftCh = hwStartChannel(recInput);
+    if (leftCh < 0 || bus < 0) return;
+    sendSolo(leftCh, bus, on);
+    if (isStereoInput(recInput)) {
+        sendSolo(leftCh + 1, bus, on);
+    }
+}
+
 void TotalReaperCSurf::flushTick_() {
     if (client_ == nullptr) return;
-    if (tickFader_.empty() && tickBalpan_.empty()) return;
+    if (tickFader_.empty() && tickBalpan_.empty() && tickSolo_.empty()) return;
     if (!client_->isConnected()) {
         client_->connect("127.0.0.1", txPort_);
     }
@@ -791,6 +820,17 @@ void TotalReaperCSurf::flushTick_() {
         }
     }
     tickBalpan_.clear();
+    for (const auto& kv : tickSolo_) {
+        const int hwIdx = kv.first >> 16;
+        const int bus   = kv.first & 0xFFFF;
+        char path[64];
+        std::snprintf(path, sizeof(path), "/mix/in/%d/%d/solo", hwIdx, bus);
+        osc::Message msg(path);
+        msg.addFloat(kv.second.on ? 1.0f : 0.0f);
+        client_->send(msg);
+        txLog(msg);
+    }
+    tickSolo_.clear();
 }
 
 void TotalReaperCSurf::setTwoWayEnabled(bool enabled) {

@@ -16,7 +16,7 @@ in real time. Not yet ready for unattended production use.
 
 ---
 
-## What it does today (v0.2.0)
+## What it does today (v0.2.1)
 
 > macOS (arm64 + Intel) and **Windows** (x64). Install via ReaPack or grab the
 > binary from the latest GitHub release.
@@ -29,6 +29,10 @@ source of truth for the TotalMix input matrix:
 - Track volume / mute / pan / width → `/mix/in/<n>/<bus>/fader|balpan` on
   the bus the track records to. REAPER's own software monitor is muted
   while the mirror is engaged, so you only hear TotalMix's hardware path.
+- Track solo → `/mix/in/<n>/<main>/solo` on the **main output only**. Soloing
+  a monitored track solos its input on the main out (the others dim, the
+  soloed one stays audible); the cue/phones submixes are left untouched so
+  each keeps its own balance.
 - Stereo input tracks emit fader/pan/width for both halves of the pair.
 - Track-to-track sends → matrix routings to the destination bus, with
   per-send level/pan respected.

@@ -12,6 +12,11 @@
 //      straight to the RME phones channels with no intermediate bus track).
 //      Same per-bus routing as (2); gain folds the track fader in per the
 //      send mode (post = f * sendVol, pre = sendVol).
+//   4. Track solo → /mix/in/<n>/<main>/solo on the MAIN bus only. A soloed
+//      monitored track solos its input on the main out (others dim, the
+//      soloed one stays audible); cue/phones submixes are left untouched so
+//      each keeps its own balance. Polled per tick, so solo changes from any
+//      source (UF8, scripts, mouse) are picked up.
 //
 // We do NOT mirror destination track faders to TotalMix output bus volumes —
 // those are user/external-controller territory (e.g. more_me.html).
@@ -160,6 +165,18 @@ private:
     // right) for one device channel on a specific bus.
     void sendBalpan(int reaperChannel, int bus, float balpan);
 
+    // Low-level: send a solo OSC message (0/1) for one device channel on a
+    // specific bus. Per-routing solo is native in TotalMix Global OSC
+    // (/mix/in/<hwIdx>/<bus>/solo). Tick-staged like fader/balpan.
+    void sendSolo(int reaperChannel, int bus, bool on);
+
+    // Push a solo flag for an entire I_RECINPUT to a specific bus. Stereo
+    // inputs get solo on both channels. Only ever used on the main bus:
+    // REAPER's track solo maps to a TotalMix main-out solo (soloed input
+    // stays audible, others on the main bus dim), leaving the cue/phones
+    // submixes untouched.
+    void pushInputSolo(int recInput, int bus, bool on);
+
     // Strip-level: send /input/<hwIdx>/stereo (1 = link the pair, 0 = unlink).
     // Sent immediately, not tick-staged — stereo-link changes are rare.
     void sendStripStereo(int hwIdx, bool on);
@@ -285,8 +302,10 @@ private:
     // value on first tick after enable). Main thread only.
     struct PendingFader { float db; };
     struct PendingBalpan { float balpan; };
+    struct PendingSolo { bool on; };
     std::unordered_map<EchoKey, PendingFader>  tickFader_;
     std::unordered_map<EchoKey, PendingBalpan> tickBalpan_;
+    std::unordered_map<EchoKey, PendingSolo>   tickSolo_;
     // Flush tickFader_ / tickBalpan_ to the OSC client + lastSent caches +
     // TX log. Called once at end of Run().
     void flushTick_();
