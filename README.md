@@ -16,7 +16,7 @@ in real time. Not yet ready for unattended production use.
 
 ---
 
-## What it does today (v0.2.1)
+## What it does today (v0.2.2)
 
 > macOS (arm64 + Intel) and **Windows** (x64). Install via ReaPack or grab the
 > binary from the latest GitHub release.
@@ -65,6 +65,13 @@ strip via `/input/<n>/...`:
 
 Bind these to keyboard shortcuts (or a control surface) and you have
 direct mic-pre control from inside REAPER.
+
+Point a track at a different input and the readback follows on its own.
+TotalMix only reports a channel when something on it moves, so the cached
+values would otherwise describe the channel you just left until you nudged
+the gain. TotalReaper watches `I_RECINPUT`, asks TotalMix for a fresh dump
+shortly after a change, and holds the two-way fader path off while the
+answer arrives so nothing writes stale levels back into REAPER.
 
 ### Studio actions
 

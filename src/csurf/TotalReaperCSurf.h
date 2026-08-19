@@ -348,6 +348,25 @@ private:
     // and be absorbed without disturbing REAPER track state.
     std::atomic<bool> priming_{false};
 
+    // Input-reassignment watch. TotalMix only emits a channel's preamp state
+    // when something on that channel moves, so pointing a track at a DIFFERENT
+    // input leaves P_EXT holding the OLD channel's gain / 48V / pad / phase
+    // until the user nudges something — a control surface showing the preamp
+    // then reads out the wrong channel (Frank 2026-08-19, changing the input
+    // from a UF1: "wird erst aktualisiert, wenn daran gedreht wird").
+    // pollInputReassignments_ runs every tick, UNGATED by enabled_ like the
+    // preamp readback itself, and asks TotalMix for a fresh dump when it sees
+    // a track's I_RECINPUT change. Empty on the first tick, so opening a
+    // project does not trigger one.
+    std::unordered_map<MediaTrack*, int> lastRecInput_;
+    // Debounce: holding Shift and spinning an encoder through the input list
+    // changes I_RECINPUT once per detent, and one /sendall per detent would be
+    // a flood. Set while a refresh is queued; the refresh fires shortly after
+    // the FIRST change of a burst and any further changes queue the next one.
+    bool preampRefreshPending_ = false;
+    void pollInputReassignments_();
+    void requestPreampRefresh_();
+
     // Last "rolling" state SetPlayState was called with, so we only act on
     // genuine transitions (play→stop, stop→play). REAPER tends to fire
     // SetPlayState only on changes but it's cheap to dedupe and avoids any

@@ -48,6 +48,16 @@ constexpr int kStereoPanReassertMs = 200;
 // are what finally seed the echo cache.
 constexpr int kStereoEchoMuteMs = 350;
 
+// How long to sit on an input reassignment before asking TotalMix for a fresh
+// dump. Spinning an encoder through the input list changes I_RECINPUT once per
+// detent; this collapses a spin into one request. Long enough to swallow a
+// deliberate turn, short enough that the readout catches up while the hand is
+// still on the knob.
+constexpr int kPreampRefreshDebounceMs = 250;
+// How long the fader guard stays up after that request. Same 500 ms setEnabled
+// uses — generous for a localhost UDP burst.
+constexpr int kPreampRefreshPrimingMs = 500;
+
 // I_RECINPUT bit layout (per reaper_plugin_functions.h):
 //   bit 4096 → MIDI input (we skip)
 //   bit 2048 → multichannel input (we skip for now)
@@ -363,12 +373,74 @@ void TotalReaperCSurf::Run() {
         }
     }
 
+    // BEFORE the enabled_ gate: preamp readback is metadata and works with the
+    // routing mirror off (see onIncomingPreamp), so the refresh that keeps it
+    // honest has to work there too.
+    pollInputReassignments_();
+
     if (!enabled_.load()) return;
     const int trackCount = CountTracks(nullptr);
     for (int i = 0; i < trackCount; ++i) {
         processTrack(GetTrack(nullptr, i));
     }
     flushTick_();
+}
+
+void TotalReaperCSurf::pollInputReassignments_() {
+    const int trackCount = CountTracks(nullptr);
+    std::unordered_map<MediaTrack*, int> seen;
+    seen.reserve(static_cast<size_t>(trackCount));
+    bool reassigned = false;
+    for (int i = 0; i < trackCount; ++i) {
+        MediaTrack* tr = GetTrack(nullptr, i);
+        if (tr == nullptr) continue;
+        const int recInput =
+            static_cast<int>(GetMediaTrackInfo_Value(tr, "I_RECINPUT"));
+        seen[tr] = recInput;
+        const auto it = lastRecInput_.find(tr);
+        // Only a track we have already seen counts — a first sighting is not a
+        // reassignment, or every project load would fire a refresh. And only
+        // when the NEW input is a hardware channel: MIDI / multichannel have no
+        // preamp to read back.
+        if (it != lastRecInput_.end() && it->second != recInput
+            && hwStartChannel(recInput) >= 0) {
+            reassigned = true;
+        }
+    }
+    lastRecInput_.swap(seen);
+    if (!reassigned || preampRefreshPending_) return;
+    preampRefreshPending_ = true;
+    // Wait out the rest of a spin before asking, so one turn through the input
+    // list costs one dump rather than one per detent.
+    scheduleAfter(kPreampRefreshDebounceMs, [this]() {
+        preampRefreshPending_ = false;
+        requestPreampRefresh_();
+    });
+}
+
+void TotalReaperCSurf::requestPreampRefresh_() {
+    if (client_ == nullptr) return;
+    if (!client_->isConnected()) {
+        client_->connect("127.0.0.1", txPort_);
+    }
+    // Hold the fader guard across the response burst, exactly as setEnabled
+    // does: /sendall dumps EVERYTHING, and without this 2-Way would apply
+    // TotalMix's fader state back onto REAPER's tracks. onIncomingPreamp has no
+    // such guard — which is the point, the preamp values are what we asked for
+    // and they land while the faders are held off.
+    priming_.store(true);
+    osc::Message refresh("/sendall");
+    refresh.addFloat(1.0f);
+    client_->send(refresh);
+    txLog(refresh);
+    // ⛔ No rxQueue_.clear() here, deliberately unlike setEnabled. That clear
+    // exists to drop pre-priming fader stragglers, and it would throw away the
+    // preamp jobs this dump just produced — the very values we asked for. It
+    // also matters when two refreshes overlap: the second one's results would
+    // be swept up by the first one's timer.
+    scheduleAfter(kPreampRefreshPrimingMs, [this]() {
+        priming_.store(false);
+    });
 }
 
 void TotalReaperCSurf::scheduleAfter(int delayMs,
