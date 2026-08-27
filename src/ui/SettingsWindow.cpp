@@ -117,6 +117,15 @@ void drawContents() {
             g_surf->setEnabled(mirror);
             RefreshToolbar2(0, actions::routingMirrorCommandId());
         }
+        bool onlyMain = g_surf->isOnlyMainSubmix();
+        if (ImGui::Checkbox(g_ctx, "Only set the main submix", &onlyMain)) {
+            g_surf->setOnlyMainSubmix(onlyMain);
+        }
+        ImGui::TextWrapped(g_ctx,
+            "The mirror writes the master track's hardware bus and nothing "
+            "else. Phones and cue submixes keep whatever you built in "
+            "TotalMix, including when you switch the mirror off.");
+
         bool twoWay = g_surf->isTwoWayEnabled();
         if (ImGui::Checkbox(g_ctx, "2-Way Control (TotalMix -> REAPER)", &twoWay)) {
             g_surf->setTwoWayEnabled(twoWay);

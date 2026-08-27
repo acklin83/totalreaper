@@ -281,6 +281,12 @@ REAPER_PLUGIN_DLL_EXPORT int ReaperPluginEntry(REAPER_PLUGIN_HINSTANCE /*hInstan
             g_csurf->setStereoPairLink(true);
         }
     }
+    if (HasExtState("TotalReaper", "OnlyMainSubmix")) {
+        const char* v = GetExtState("TotalReaper", "OnlyMainSubmix");
+        if (v && v[0] == '1') {
+            g_csurf->setOnlyMainSubmix(true);
+        }
+    }
 
     totalreaper::reaper::debugLog("[TotalReaper] loaded — "
                                   "find actions in Action List by typing 'TotalReaper'");

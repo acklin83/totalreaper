@@ -822,6 +822,7 @@ void TotalReaperCSurf::pushInputRouting(int recInput, int bus, float db,
 
 void TotalReaperCSurf::sendFader(int reaperChannel, int bus, float db) {
     if (bus < 0) return;
+    if (!busWritable_(bus)) return;
     if (reaperChannel < 0 || reaperChannel > kRecInputChannelMask) return;
 
     const int hwIdx = reaper::reaperInputToHardware(reaperChannel);
@@ -833,6 +834,7 @@ void TotalReaperCSurf::sendFader(int reaperChannel, int bus, float db) {
 
 void TotalReaperCSurf::sendBalpan(int reaperChannel, int bus, float balpan) {
     if (bus < 0) return;
+    if (!busWritable_(bus)) return;
     if (reaperChannel < 0 || reaperChannel > kRecInputChannelMask) return;
 
     const int hwIdx = reaper::reaperInputToHardware(reaperChannel);
@@ -841,6 +843,7 @@ void TotalReaperCSurf::sendBalpan(int reaperChannel, int bus, float balpan) {
 
 void TotalReaperCSurf::sendSolo(int reaperChannel, int bus, bool on) {
     if (bus < 0) return;
+    if (!busWritable_(bus)) return;
     if (reaperChannel < 0 || reaperChannel > kRecInputChannelMask) return;
 
     const int hwIdx = reaper::reaperInputToHardware(reaperChannel);
@@ -977,6 +980,27 @@ void TotalReaperCSurf::setStereoPairLink(bool enabled) {
     // next tick. No auto-unlink on toggle-off (link-only by design).
     stereoLinked_.clear();
     { std::lock_guard<std::mutex> g(rxMu_); lastSentWidth_.clear(); }
+}
+
+bool TotalReaperCSurf::busWritable_(int bus) const {
+    if (!onlyMainSubmix_.load()) return true;
+    const int mainBus = resolveMainBusFromMaster();
+    return mainBus >= 0 && bus == mainBus;
+}
+
+void TotalReaperCSurf::setOnlyMainSubmix(bool enabled) {
+    if (enabled == onlyMainSubmix_.load()) return;
+    onlyMainSubmix_.store(enabled);
+    SetExtState("TotalReaper", "OnlyMainSubmix", enabled ? "1" : "0",
+                /*persist*/ true);
+    // Forget what we believe TotalMix holds on the other buses. Switching this
+    // ON, that is what keeps the close-out sweep off them: a routing we no
+    // longer remember is never pulled to -inf. Switching it OFF, every routing
+    // reads as new on the next tick and gets pushed again, so the mirror
+    // catches up instead of sitting on a cache that says "already sent".
+    for (auto& kv : states_) {
+        kv.second.sendRoutings.clear();
+    }
 }
 
 bool TotalReaperCSurf::stereoEchoMutedLocked_(int hwIdx) {

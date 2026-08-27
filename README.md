@@ -16,7 +16,7 @@ in real time. Not yet ready for unattended production use.
 
 ---
 
-## What it does today (v0.2.2)
+## What it does today (v0.2.3)
 
 > macOS (arm64 + Intel) and **Windows** (x64). Install via ReaPack or grab the
 > binary from the latest GitHub release.
@@ -42,6 +42,13 @@ source of truth for the TotalMix input matrix:
 - Reacts live to input reassignment, send add/remove, and stereo-link
   changes.
 - Toggle state persists across REAPER restarts.
+
+**Only Set Main Submix** (settings window) narrows all of that to one bus: the
+master track's hardware output. The phones and cue submixes are then never
+written, so whatever you built by hand in TotalMix stays put, including when
+you switch the routing mirror off. Without it, disabling the mirror pulls every
+routing it ever wrote down to -inf, cue mixes included. Turning it back off
+re-pushes the other buses on the next tick.
 
 **TotalReaper: Toggle 2-Way Control** — on top of the routing mirror, this
 toggle adds the reverse direction: moving a fader or balpan in TotalMix
@@ -93,9 +100,9 @@ Global TotalMix controls and project-state recall:
 
 - **OSC ports** (send to TotalMix / listen), configurable and applied live —
   no restart.
-- **Feature toggles** for Routing Mirror, 2-Way Control, Auto-Talkback and
-  Stereo-Pair Link. These stay in sync with the matching actions and toolbar
-  icons.
+- **Feature toggles** for Routing Mirror, Only Set Main Submix, 2-Way Control,
+  Auto-Talkback and Stereo-Pair Link. These stay in sync with the matching
+  actions and toolbar icons.
 
 Needs [ReaImGui](https://github.com/cfillion/reaimgui) (install via *Extensions
 → ReaPack → Browse packages*). Without it the window just reports that it's

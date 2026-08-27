@@ -101,6 +101,15 @@ public:
     void setStereoPairLink(bool enabled);
     bool isStereoPairLink() const noexcept { return stereoPairLink_.load(); }
 
+    // Only set the main submix: while this is on, the mirror writes the master
+    // track's hardware bus and nothing else. Every other hardware output, the
+    // phones and cue submixes, keeps exactly what the user set by hand in
+    // TotalMix. That includes the moment the mirror is switched off, which
+    // otherwise pulls every routing it ever wrote down to -inf and takes the
+    // hand-built cue mixes with it. Persisted in ExtState.
+    void setOnlyMainSubmix(bool enabled);
+    bool isOnlyMainSubmix() const noexcept { return onlyMainSubmix_.load(); }
+
     // Called from the OSC receive thread when TotalMix reports a fader or
     // balpan value for /mix/in/<hwIdx>/<bus>/{fader,balpan}. Performs
     // echo-suppression against our own most-recent send and, if the value
@@ -156,6 +165,13 @@ private:
     // sendPan=false means "don't touch balpan" (also honored for mono).
     void pushInputRouting(int recInput, int bus, float db,
                           float panL, float panR, bool sendPan);
+
+    // False for every bus except the master track's while "only main submix"
+    // is on. The three senders below are the only route anything takes to
+    // TotalMix, so asking here covers ordinary writes, the close-out of a
+    // routing that disappeared, and the mirror's own disable sweep, in one
+    // place instead of three rules that would drift apart.
+    bool busWritable_(int bus) const;
 
     // Low-level: send a single fader OSC message for one device channel on
     // a specific bus. Applies the reaper.ini input alias translation.
@@ -327,6 +343,7 @@ private:
     std::atomic<bool> twoWayEnabled_{false};      // additionally enable TotalMix → REAPER
     std::atomic<bool> autoTalkbackEnabled_{false}; // drive talkback from transport state
     std::atomic<bool> stereoPairLink_{false};      // link REAPER stereo inputs in TotalMix
+    std::atomic<bool> onlyMainSubmix_{false};      // write the master's bus, leave the rest alone
 
     // Left hardware channels we've already sent a stereo-link for, so we don't
     // re-send every tick. Cleared on mirror-disable and on link-off. Written
