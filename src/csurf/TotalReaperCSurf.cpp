@@ -822,7 +822,7 @@ void TotalReaperCSurf::pushInputRouting(int recInput, int bus, float db,
 
 void TotalReaperCSurf::sendFader(int reaperChannel, int bus, float db) {
     if (bus < 0) return;
-    if (!busWritable_(bus)) return;
+    if (!busInScope_(bus)) return;
     if (reaperChannel < 0 || reaperChannel > kRecInputChannelMask) return;
 
     const int hwIdx = reaper::reaperInputToHardware(reaperChannel);
@@ -834,7 +834,7 @@ void TotalReaperCSurf::sendFader(int reaperChannel, int bus, float db) {
 
 void TotalReaperCSurf::sendBalpan(int reaperChannel, int bus, float balpan) {
     if (bus < 0) return;
-    if (!busWritable_(bus)) return;
+    if (!busInScope_(bus)) return;
     if (reaperChannel < 0 || reaperChannel > kRecInputChannelMask) return;
 
     const int hwIdx = reaper::reaperInputToHardware(reaperChannel);
@@ -843,7 +843,7 @@ void TotalReaperCSurf::sendBalpan(int reaperChannel, int bus, float balpan) {
 
 void TotalReaperCSurf::sendSolo(int reaperChannel, int bus, bool on) {
     if (bus < 0) return;
-    if (!busWritable_(bus)) return;
+    if (!busInScope_(bus)) return;
     if (reaperChannel < 0 || reaperChannel > kRecInputChannelMask) return;
 
     const int hwIdx = reaper::reaperInputToHardware(reaperChannel);
@@ -982,7 +982,7 @@ void TotalReaperCSurf::setStereoPairLink(bool enabled) {
     { std::lock_guard<std::mutex> g(rxMu_); lastSentWidth_.clear(); }
 }
 
-bool TotalReaperCSurf::busWritable_(int bus) const {
+bool TotalReaperCSurf::busInScope_(int bus) const {
     if (!onlyMainSubmix_.load()) return true;
     const int mainBus = resolveMainBusFromMaster();
     return mainBus >= 0 && bus == mainBus;
@@ -1256,6 +1256,12 @@ void TotalReaperCSurf::applyIncomingPreamp(int hwIdx, std::string extKey,
 
 void TotalReaperCSurf::applyIncomingFader(int hwIdx, int bus, float db) {
     if (!enabled_.load() || !twoWayEnabled_.load()) return;
+    // A bus we don't write is a bus we don't read: someone else is mixing it
+    // (a client's own headphone mixer on the interface, a hand-built cue), and
+    // turning their moves into REAPER send levels would quietly rewrite the
+    // session behind them. Asked before the echo cache is touched, because a
+    // bus we ignore has no echo of ours to suppress.
+    if (!busInScope_(bus)) return;
 
     MediaTrack* tr = findFirstTrackForHwIdx(hwIdx);
     if (tr == nullptr) return;
@@ -1303,6 +1309,7 @@ void TotalReaperCSurf::applyIncomingFader(int hwIdx, int bus, float db) {
 
 void TotalReaperCSurf::applyIncomingBalpan(int hwIdx, int bus, float balpan) {
     if (!enabled_.load() || !twoWayEnabled_.load()) return;
+    if (!busInScope_(bus)) return;   // see applyIncomingFader
 
     MediaTrack* tr = findFirstTrackForHwIdx(hwIdx);
     if (tr == nullptr) return;

@@ -122,9 +122,11 @@ void drawContents() {
             g_surf->setOnlyMainSubmix(onlyMain);
         }
         ImGui::TextWrapped(g_ctx,
-            "The mirror writes the master track's hardware bus and nothing "
-            "else. Phones and cue submixes keep whatever you built in "
-            "TotalMix, including when you switch the mirror off.");
+            "The master track's hardware bus is the only one TotalReaper "
+            "touches, in either direction: the other hardware outputs are "
+            "never written, and moves on them never come back into REAPER. "
+            "Phones and cue submixes stay with whoever mixes them, including "
+            "when you switch the mirror off.");
 
         bool twoWay = g_surf->isTwoWayEnabled();
         if (ImGui::Checkbox(g_ctx, "2-Way Control (TotalMix -> REAPER)", &twoWay)) {

@@ -44,11 +44,14 @@ source of truth for the TotalMix input matrix:
 - Toggle state persists across REAPER restarts.
 
 **Only Set Main Submix** (settings window) narrows all of that to one bus: the
-master track's hardware output. The phones and cue submixes are then never
-written, so whatever you built by hand in TotalMix stays put, including when
-you switch the routing mirror off. Without it, disabling the mirror pulls every
-routing it ever wrote down to -inf, cue mixes included. Turning it back off
-re-pushes the other buses on the next tick.
+master track's hardware output. The other hardware outputs are then left alone
+in **both** directions. Nothing is written to them, so whatever you built by
+hand in TotalMix stays put, including when you switch the routing mirror off
+(without this, disabling the mirror pulls every routing it ever wrote down to
+-inf, cue mixes included). And nothing TotalMix reports on them is read back,
+so a separate cue mixer driving those submixes on the interface, a client
+turning up their own headphones, does not rewrite REAPER's send levels behind
+you. Turning the option back off re-pushes the other buses on the next tick.
 
 **TotalReaper: Toggle 2-Way Control** — on top of the routing mirror, this
 toggle adds the reverse direction: moving a fader or balpan in TotalMix

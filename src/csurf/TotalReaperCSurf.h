@@ -101,10 +101,13 @@ public:
     void setStereoPairLink(bool enabled);
     bool isStereoPairLink() const noexcept { return stereoPairLink_.load(); }
 
-    // Only set the main submix: while this is on, the mirror writes the master
-    // track's hardware bus and nothing else. Every other hardware output, the
-    // phones and cue submixes, keeps exactly what the user set by hand in
-    // TotalMix. That includes the moment the mirror is switched off, which
+    // Only set the main submix: while this is on, the master track's hardware
+    // bus is the only one this extension has anything to do with. Nothing is
+    // written to the other hardware outputs, the phones and cue submixes, and
+    // nothing TotalMix reports on them is read back into REAPER either. They
+    // belong to whoever is mixing them: the user by hand, or a separate cue
+    // app driving the interface directly. Not writing them also means the
+    // mirror's disable sweep cannot reach them, which is the sweep that
     // otherwise pulls every routing it ever wrote down to -inf and takes the
     // hand-built cue mixes with it. Persisted in ExtState.
     void setOnlyMainSubmix(bool enabled);
@@ -167,11 +170,13 @@ private:
                           float panL, float panR, bool sendPan);
 
     // False for every bus except the master track's while "only main submix"
-    // is on. The three senders below are the only route anything takes to
-    // TotalMix, so asking here covers ordinary writes, the close-out of a
-    // routing that disappeared, and the mirror's own disable sweep, in one
-    // place instead of three rules that would drift apart.
-    bool busWritable_(int bus) const;
+    // is on. Both directions ask: the three senders below are the only route
+    // anything takes to TotalMix, so one question there covers ordinary
+    // writes, the close-out of a routing that disappeared and the mirror's
+    // own disable sweep; the applyIncoming* pair asks it again so a submix
+    // someone else is mixing does not push its moves into REAPER's sends.
+    // Main thread only, it reads the master track.
+    bool busInScope_(int bus) const;
 
     // Low-level: send a single fader OSC message for one device channel on
     // a specific bus. Applies the reaper.ini input alias translation.
