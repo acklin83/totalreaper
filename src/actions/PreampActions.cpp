@@ -33,6 +33,10 @@ constexpr const char* kExtPad       = "P_EXT:totalreaper_pad";
 constexpr const char* kExtPhase     = "P_EXT:totalreaper_phase";
 constexpr const char* kExtAutolevel = "P_EXT:totalreaper_autolevel";
 
+// Preamp gain range we hold the cache to. See the clamp in runGainDelta.
+constexpr double kGainMinDb = 0.0;
+constexpr double kGainMaxDb = 75.0;
+
 constexpr int kRecInputMidi         = 4096;
 constexpr int kRecInputMultichannel = 2048;
 constexpr int kRecInputStereo       = 1024;
@@ -134,7 +138,21 @@ void runGainDelta(double deltaDb) {
             continue;
         }
 
+        // ⛔ THE COUNT NEEDS A CEILING, BECAUSE THE ECHO CANNOT PROVIDE ONE.
+        // TotalMix clamps its own preamp and then says nothing: it reports a
+        // gain when the value CHANGES, and at the top nothing changes. So every
+        // further detent used to raise our cache alone, and the cache is what a
+        // control surface reads back — the preamp sat at 75 in TotalMix while a
+        // UF1 strip read 128 dB and climbing (reported 2026-08-28).
+        //
+        // 75 dB is the mic-pre range on the UFX+ family. Global OSC exposes no
+        // per-channel maximum, so a line or instrument input with a shorter
+        // range still stops short of its own ceiling here; this is an honest
+        // upper bound, not a per-input one. If RME ever reports the range, that
+        // is the number to use instead.
         dB += deltaDb;
+        if (dB < kGainMinDb) dB = kGainMinDb;
+        if (dB > kGainMaxDb) dB = kGainMaxDb;
         char buf[32];
         std::snprintf(buf, sizeof(buf), "%g", dB);
         writeExt(tr, kExtGain, buf);
