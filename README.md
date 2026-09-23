@@ -16,7 +16,7 @@ in real time. Not yet ready for unattended production use.
 
 ---
 
-## What it does today (v0.2.3)
+## What it does today (v0.2.4)
 
 > macOS (arm64 + Intel) and **Windows** (x64). Install via ReaPack or grab the
 > binary from the latest GitHub release.
