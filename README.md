@@ -76,6 +76,10 @@ strip via `/input/<n>/...`:
 Bind these to keyboard shortcuts (or a control surface) and you have
 direct mic-pre control from inside REAPER.
 
+They work whether or not the routing mirror is on. The mirror decides
+whether REAPER's monitoring drives TotalMix's faders; a preamp is a setting
+on the interface's input, and so are the control-room actions below.
+
 Point a track at a different input and the readback follows on its own.
 TotalMix only reports a channel when something on it moves, so the cached
 values would otherwise describe the channel you just left until you nudged

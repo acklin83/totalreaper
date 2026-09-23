@@ -30,11 +30,15 @@ int s_snapSave[kSnapshotSlotCount] = {};
 int s_snapLoad[kSnapshotSlotCount] = {};
 int s_invalidId = -1;
 
-// Returns true if the routing mirror is active and we have a working OSC
-// path to TotalMix. Global actions are no-ops without a live mirror because
-// they assume the user has consciously wired TotalReaper to TotalMix.
+// Returns true when there is a working OSC path to TotalMix.
+//
+// ⛔ THE ROUTING MIRROR IS NOT ASKED. Dim, Mono, Speaker B, Talkback and the
+// snapshots are control-room commands; the mirror decides whether REAPER's
+// monitoring drives TotalMix's faders, which is a different question (Frank
+// 2026-09-23: the mirror should do the hardware monitor for REAPER and nothing
+// else). Same rule as the preamp writes next door, and the same reason the
+// preamp readback never asked either.
 bool oscReady() {
-    if (csurfInstance() == nullptr || !csurfInstance()->isEnabled()) return false;
     return oscClient() != nullptr;
 }
 

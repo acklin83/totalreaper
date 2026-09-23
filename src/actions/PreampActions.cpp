@@ -83,11 +83,19 @@ std::vector<MediaTrack*> selectedHwInputTracks() {
 }
 
 // Push an OSC float to /input/<hwIdx>/<param> for both the left channel and
-// (for stereo inputs) the right channel of the track's hardware input. Only
-// sends if the routing mirror is currently enabled — otherwise the value is
-// stored in ExtState but TotalMix is not touched.
+// (for stereo inputs) the right channel of the track's hardware input.
+//
+// ⛔ UNGATED BY THE ROUTING MIRROR, and that is the point of it. A preamp is
+// not a routing: the mirror decides whether REAPER's monitoring drives
+// TotalMix's faders, while gain, 48V, pad, phase and AutoLevel are settings on
+// the interface's input. Reading them was already ungated for exactly that
+// reason (onIncomingPreamp, pollInputReassignments_), and writing them was not,
+// so with the mirror off a surface showed the gain and could not move it: the
+// value landed in ExtState and TotalMix never heard about it (Frank
+// 2026-09-23: "wieso kann ich denn den preamp gain ohne Routing Mirror ON
+// nicht verstellen?"). The client is connected when the extension loads, not
+// when the mirror is switched on.
 void pushPreampParam(MediaTrack* tr, const char* paramSuffix, float value) {
-    if (csurfInstance() == nullptr || !csurfInstance()->isEnabled()) return;
     osc::Client* c = oscClient();
     if (c == nullptr) return;
 

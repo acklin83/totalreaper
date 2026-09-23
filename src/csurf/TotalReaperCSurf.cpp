@@ -359,7 +359,10 @@ void TotalReaperCSurf::Run() {
     for (auto& job : rxJobs) job();
 
     // Fire any deferred actions whose time has come, regardless of enabled
-    // state — they were scheduled by code that already gated on enabled.
+    // state. That matters for the pad's three stages (mute, write, unmute):
+    // since the preamp writes stopped asking about the routing mirror, a pad
+    // toggle with the mirror off would otherwise mute an input and leave it
+    // muted.
     if (!deferred_.empty()) {
         const auto now = std::chrono::steady_clock::now();
         for (auto it = deferred_.begin(); it != deferred_.end(); ) {
