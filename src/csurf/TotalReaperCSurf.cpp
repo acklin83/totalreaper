@@ -405,9 +405,26 @@ void TotalReaperCSurf::pollInputReassignments_() {
         // reassignment, or every project load would fire a refresh. And only
         // when the NEW input is a hardware channel: MIDI / multichannel have no
         // preamp to read back.
-        if (it != lastRecInput_.end() && it->second != recInput
-            && hwStartChannel(recInput) >= 0) {
-            reassigned = true;
+        if (it != lastRecInput_.end() && it->second != recInput) {
+            // ⛔ DIE ALTEN PREAMP-WERTE GEHEN MIT DEM ALTEN EINGANG. Sie stehen
+            // an der SPUR (P_EXT), nicht am Kanal: haengt die Spur auf einen
+            // Kanal ohne Preamp um, meldet TotalMix dafuer nichts, und der Wert
+            // des vorigen Eingangs blieb stehen. Eine Flaeche zeigte dann dB auf
+            // einem MADI-Kanal, und weil runGainDelta genau diesen gespeicherten
+            // Wert als Ausgangspunkt nimmt, liess er sich auch noch verstellen
+            // (Frank 23.09.: "dB Werte auf Kanaelen, die gar keinen Preamp
+            // haben? Und sogar verstellbar!").
+            // Geleert wird IMMER beim Wechsel, auch auf MIDI oder mehrkanalig;
+            // der Dump gleich danach fuellt zurueck, was der neue Kanal hat.
+            GetSetMediaTrackInfo_String(tr, "P_EXT:totalreaper_gain",
+                                        const_cast<char*>(""), true);
+            GetSetMediaTrackInfo_String(tr, "P_EXT:totalreaper_48v",
+                                        const_cast<char*>(""), true);
+            GetSetMediaTrackInfo_String(tr, "P_EXT:totalreaper_pad",
+                                        const_cast<char*>(""), true);
+            GetSetMediaTrackInfo_String(tr, "P_EXT:totalreaper_phase",
+                                        const_cast<char*>(""), true);
+            if (hwStartChannel(recInput) >= 0) reassigned = true;
         }
     }
     lastRecInput_.swap(seen);
