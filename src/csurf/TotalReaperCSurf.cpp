@@ -57,6 +57,9 @@ constexpr int kPreampRefreshDebounceMs = 250;
 // How long the fader guard stays up after that request. Same 500 ms setEnabled
 // uses — generous for a localhost UDP burst.
 constexpr int kPreampRefreshPrimingMs = 500;
+// How long TotalMix gets to answer a /sendall before watchSendallAnswer_
+// judges it. The answer measured on Windows arrived within 30 ms.
+constexpr int kSendallAnswerMs = 1500;
 
 // I_RECINPUT bit layout (per reaper_plugin_functions.h):
 //   bit 4096 → MIDI input (we skip)
@@ -306,6 +309,7 @@ void TotalReaperCSurf::setEnabled(bool enabled) {
         refresh.addFloat(1.0f);
         client_->send(refresh);
         txLog(refresh);
+        watchSendallAnswer_();
     }
 
     // Release the priming flag once the /sendall response burst has had
@@ -453,6 +457,7 @@ void TotalReaperCSurf::requestPreampRefresh_() {
     refresh.addFloat(1.0f);
     client_->send(refresh);
     txLog(refresh);
+    watchSendallAnswer_();
     // ⛔ No rxQueue_.clear() here, deliberately unlike setEnabled. That clear
     // exists to drop pre-priming fader stragglers, and it would throw away the
     // preamp jobs this dump just produced — the very values we asked for. It
@@ -460,6 +465,49 @@ void TotalReaperCSurf::requestPreampRefresh_() {
     // be swept up by the first one's timer.
     scheduleAfter(kPreampRefreshPrimingMs, [this]() {
         priming_.store(false);
+    });
+}
+
+void TotalReaperCSurf::requestPreampRefresh()
+{
+    if (preampRefreshPending_) return;
+    preampRefreshPending_ = true;
+    scheduleAfter(kPreampRefreshDebounceMs, [this]() {
+        preampRefreshPending_ = false;
+        requestPreampRefresh_();
+    });
+}
+
+const char* TotalReaperCSurf::totalMixAnswerHint(TotalMixAnswer a)
+{
+    switch (a) {
+        case TotalMixAnswer::NoAnswer:
+            return "TotalMix does not answer. Check that TotalMix is running, that "
+                   "Options, Enable OSC Control is ticked, and that the OSC remote's "
+                   "ports match TotalReaper's.";
+        case TotalMixAnswer::LevelsOnly:
+            return "TotalMix answers without channel values, so the preamp gain has "
+                   "nothing to start from. In TotalMix, tick Settings, OSC, Details, "
+                   "Send changes.";
+        default:
+            return "";
+    }
+}
+
+void TotalReaperCSurf::watchSendallAnswer_()
+{
+    osc::TotalMixState* st = actions::totalMixState();
+    if (st == nullptr) return;
+    const unsigned msgs = st->messageCount();
+    const unsigned vals = st->channelValueCount();
+    scheduleAfter(kSendallAnswerMs, [this, st, msgs, vals]() {
+        const TotalMixAnswer now =
+              st->channelValueCount() != vals ? TotalMixAnswer::Ok
+            : st->messageCount() != msgs      ? TotalMixAnswer::LevelsOnly
+                                              : TotalMixAnswer::NoAnswer;
+        const TotalMixAnswer was = answer_.exchange(now);
+        if (now != was && now != TotalMixAnswer::Ok)
+            reaper::log(std::string("[TotalReaper] ") + totalMixAnswerHint(now));
     });
 }
 

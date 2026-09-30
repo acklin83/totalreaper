@@ -12,6 +12,7 @@
 
 #include "OscMessage.h"
 
+#include <atomic>
 #include <mutex>
 #include <unordered_map>
 
@@ -31,9 +32,22 @@ public:
     // the state back.
     void setInputGain(int hwIdx, float dB);
 
+    // ⇨ DID TOTALMIX ANSWER, AND WITH WHAT (30.09.2026, measured on Windows
+    // with TotalMix 2.1 beta 7): with "Send changes" off in TotalMix' OSC
+    // Details, /sendall is answered with levels and status only, never a
+    // channel value, so the preamp gain has no starting point and every gain
+    // step was dropped without a word. The csurf compares these two counts
+    // around each /sendall (watchSendallAnswer_) and says which case it is.
+    // messageCount: everything TotalMix sent. channelValueCount: the strip
+    // and matrix values (/input, /playback, /output, /mix), levels excluded.
+    unsigned messageCount() const noexcept { return messages_.load(std::memory_order_relaxed); }
+    unsigned channelValueCount() const noexcept { return channelValues_.load(std::memory_order_relaxed); }
+
 private:
     mutable std::mutex mu_;
     std::unordered_map<int, float> inputGain_;
+    std::atomic<unsigned> messages_{0};
+    std::atomic<unsigned> channelValues_{0};
 };
 
 } // namespace totalreaper::osc

@@ -136,9 +136,9 @@ Find all actions in REAPER's Action List by typing "TotalReaper".
 
 ## Prerequisites
 
-1. **TotalMix FX 2.1 Alpha 4** (or later) with **Global OSC** enabled.
-   - Download: https://www.rme-audio.de/downloads/tmfx_mac_globalosc_21alpha4.zip (Mac)
-   - Or: https://www.rme-audio.de/downloads/tmfx_win_globalosc_21alpha4.zip (Win)
+1. **TotalMix FX 2.1** (beta, or later) with **Global OSC** enabled.
+   - RME posts the current 2.1 build for Mac and Windows in the RME forum:
+     https://forum.rme-audio.de/viewtopic.php?id=43075
    - In TotalMix: **Settings → OSC → Compatibility Mode → Global OSC**, then
      **Options → Enable OSC Control**.
    - Default ports: TotalMix RX 7001, TX 7002 (TotalReaper assumes these).
@@ -148,6 +148,12 @@ Find all actions in REAPER's Action List by typing "TotalReaper".
      layout — the routing mirror appears completely dead even though
      TotalReaper is sending correctly. Default in some TotalMix versions
      is OFF.
+   - **Settings → OSC → Details… → "Send changes" must be checked.**
+     Without it TotalMix answers TotalReaper's `/sendall` with levels and
+     status only, never a channel value, so the preamp gain has nothing to
+     start from and no gain step reaches TotalMix, while 48V, pad and phase
+     still work (measured on Windows with TotalMix 2.1 beta 7). TotalReaper
+     says so in REAPER's console and in its settings window.
 
 2. **REAPER 6 or later**.
 

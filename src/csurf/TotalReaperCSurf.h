@@ -142,6 +142,19 @@ public:
     // Fires on REAPER's main thread, so REAPER API calls inside are safe.
     void scheduleAfter(int delayMs, std::function<void()> action);
 
+    // ⇨ WHAT TOTALMIX ANSWERED TO THE LAST /sendall (watchSendallAnswer_):
+    // Ok, NoAnswer (nothing at all came back) or LevelsOnly (levels and
+    // status, no channel value: "Send changes" is off in TotalMix' OSC
+    // Details, measured 30.09.2026). Unknown until the first check ran.
+    // The settings window shows the hint; the console gets it once per change.
+    enum class TotalMixAnswer { Unknown, Ok, NoAnswer, LevelsOnly };
+    TotalMixAnswer totalMixAnswer() const noexcept { return answer_.load(); }
+    static const char* totalMixAnswerHint(TotalMixAnswer a);
+
+    // Ask TotalMix for its values again (/sendall), for a preamp action that
+    // found no gain to start from. Debounced like the input-change refresh.
+    void requestPreampRefresh();
+
 private:
     // Send /controlroom/talkback to TotalMix and update the TalkbackOn
     // ExtState. Used by SetPlayState (auto fires) and setAutoTalkbackEnabled
@@ -388,6 +401,10 @@ private:
     bool preampRefreshPending_ = false;
     void pollInputReassignments_();
     void requestPreampRefresh_();
+    // After each /sendall: compare TotalMixState's counts a moment later and
+    // set answer_ (see TotalMixAnswer).
+    void watchSendallAnswer_();
+    std::atomic<TotalMixAnswer> answer_{TotalMixAnswer::Unknown};
 
     // Last "rolling" state SetPlayState was called with, so we only act on
     // genuine transitions (play→stop, stop→play). REAPER tends to fire

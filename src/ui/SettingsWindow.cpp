@@ -103,6 +103,13 @@ void drawContents() {
     if (!g_status.empty()) {
         ImGui::TextWrapped(g_ctx, g_status.c_str());
     }
+    // What TotalMix answered to the last /sendall, when that is a problem
+    // (TotalReaperCSurf::watchSendallAnswer_).
+    if (g_surf != nullptr) {
+        const char* hint =
+            csurf::TotalReaperCSurf::totalMixAnswerHint(g_surf->totalMixAnswer());
+        if (hint[0] != '\0') ImGui::TextWrapped(g_ctx, hint);
+    }
 
     ImGui::Separator(g_ctx);
     ImGui::Text(g_ctx, "Behavior");

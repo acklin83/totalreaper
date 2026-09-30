@@ -115,11 +115,13 @@ void pushPreampParam(MediaTrack* tr, const char* paramSuffix, float value) {
     if (isStereo(recInput)) sendOne(leftCh + 1);
 }
 
-void runGainDelta(double deltaDb) {
-    for (MediaTrack* tr : selectedHwInputTracks()) {
+// One track's gain step. False when there is no gain to start from: TotalMix
+// has not reported this input's gain and the track stores none.
+bool applyGainDelta(MediaTrack* tr, double deltaDb) {
+    {
         const int recInput = static_cast<int>(GetMediaTrackInfo_Value(tr, "I_RECINPUT"));
         const int leftCh = hwStartChannel(recInput);
-        if (leftCh < 0) continue;
+        if (leftCh < 0) return true;   // no hardware input: nothing to step
         const int hwIdx = reaper::reaperInputToHardware(leftCh);
 
         double dB = 0.0;
@@ -141,9 +143,8 @@ void runGainDelta(double deltaDb) {
         if (!haveBaseline) {
             // No idea what TotalMix's current value is — applying a delta
             // would land somewhere arbitrary (likely 0, which TotalMix
-            // clamps to). Silently skip; the next OSC echo from TotalMix
-            // (which fires on any gain knob movement) seeds the cache.
-            continue;
+            // clamps to). runGainDelta asks TotalMix again and retries.
+            return false;
         }
 
         // ⛔ THE COUNT NEEDS A CEILING, BECAUSE THE ECHO CANNOT PROVIDE ONE.
@@ -174,6 +175,32 @@ void runGainDelta(double deltaDb) {
             }
         }
     }
+    return true;
+}
+
+// ⇨ NOT SILENT ANY MORE (30.09.2026). A gain step on an input TotalMix has
+// never reported used to vanish without a word; measured on Windows with
+// "Send changes" off, where TotalMix answers /sendall without any channel
+// value, so NO gain step ever landed while 48V did. Now the step asks
+// TotalMix for its values and tries once more, for exactly the tracks it had
+// to skip; if TotalMix still says nothing, watchSendallAnswer_ names why.
+constexpr int kGainRetryMs = 700;   // debounce 250 + answer (~30 ms measured) + margin
+
+void runGainDelta(double deltaDb, bool retry = true) {
+    std::vector<MediaTrack*> skipped;
+    for (MediaTrack* tr : selectedHwInputTracks())
+        if (!applyGainDelta(tr, deltaDb)) skipped.push_back(tr);
+    if (skipped.empty() || !retry) return;
+    auto* cs = csurfInstance();
+    if (cs == nullptr) return;
+    cs->requestPreampRefresh();
+    cs->scheduleAfter(kGainRetryMs, [skipped, deltaDb]() {
+        // Only tracks still selected: a pointer is compared, never used,
+        // unless REAPER still lists it.
+        for (MediaTrack* tr : selectedHwInputTracks())
+            for (MediaTrack* s : skipped)
+                if (s == tr) { applyGainDelta(tr, deltaDb); break; }
+    });
 }
 
 // "Toggle on selected tracks" semantics: if any selected track has the flag

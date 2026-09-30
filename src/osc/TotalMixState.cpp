@@ -26,6 +26,11 @@ int parseInputGainIndex(const std::string& addr) {
 } // namespace
 
 void TotalMixState::onMessage(const Message& msg) {
+    messages_.fetch_add(1, std::memory_order_relaxed);
+    const std::string& a = msg.address();
+    if (a.rfind("/input/", 0) == 0 || a.rfind("/playback/", 0) == 0
+        || a.rfind("/output/", 0) == 0 || a.rfind("/mix/", 0) == 0)
+        channelValues_.fetch_add(1, std::memory_order_relaxed);
     const int idx = parseInputGainIndex(msg.address());
     if (idx >= 0 && !msg.arguments().empty()) {
         if (auto* f = std::get_if<float>(&msg.arguments()[0])) {
