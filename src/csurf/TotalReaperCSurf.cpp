@@ -367,17 +367,27 @@ void TotalReaperCSurf::Run() {
     // since the preamp writes stopped asking about the routing mirror, a pad
     // toggle with the mirror off would otherwise mute an input and leave it
     // muted.
+    //
+    // ⛔ TAKE THE DUE ONES OUT FIRST, THEN RUN THEM. An action may schedule
+    // more (the preamp refresh schedules two: the priming reset and the
+    // /sendall answer watch), and a push_back into deferred_ while this loop
+    // holds an iterator into it can move the whole vector: the next erase then
+    // wrote into freed memory and took REAPER down (crash 01.10.2026, REAPER
+    // 7.81: Run() + 360 inside the erase, the heap corruption surfacing on a
+    // Metal thread). Whatever the actions schedule now lands in deferred_
+    // after the loop and waits for its own time.
     if (!deferred_.empty()) {
         const auto now = std::chrono::steady_clock::now();
+        std::vector<std::function<void()>> due;
         for (auto it = deferred_.begin(); it != deferred_.end(); ) {
             if (it->fireAt <= now) {
-                auto action = std::move(it->action);
+                due.push_back(std::move(it->action));
                 it = deferred_.erase(it);
-                action();
             } else {
                 ++it;
             }
         }
+        for (auto& action : due) action();
     }
 
     // BEFORE the enabled_ gate: preamp readback is metadata and works with the
