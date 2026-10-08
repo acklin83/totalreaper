@@ -2,7 +2,9 @@
 //
 // What we mirror, while the routing mirror is engaged:
 //   1. Input monitoring → /mix/in/<n>/<main>/fader. The main bus is the
-//      master track's first HW send.
+//      master track's first HW send. Tape-style monitoring follows the
+//      transport like REAPER does: input open when stopped and while
+//      recording, closed during playback so the take is heard instead.
 //   2. Track-to-track sends that eventually reach a hardware output, which
 //      add per-bus routings: /mix/in/<n>/<destbus>/fader. Walks send chains
 //      recursively, multiplying intermediate track faders for post-fader
@@ -294,7 +296,7 @@ private:
     //   1. The first track (lowest REAPER index) that is rec-armed AND
     //      monitoring. Frank's convention: at most one such track per input
     //      at any moment. This is the "active recording / monitoring" track.
-    //   2. Else the first track that is monitoring (recMon != 0). This
+    //   2. Else the first track that is monitoring (hearsInput). This
     //      covers ordinary "I'm just listening to this input" usage where
     //      the user hasn't rec-armed anything yet.
     //   3. Else no primary — every track for this hwIdx is dormant.

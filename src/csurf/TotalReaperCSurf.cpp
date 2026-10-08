@@ -111,6 +111,46 @@ float linToClampedDb(double lin) {
     return db;
 }
 
+// I_RECMON (per reaper_plugin_functions.h): 0 = off, 1 = normal,
+// 2 = not when playing (tape style).
+constexpr int kRecMonOff  = 0;
+constexpr int kRecMonTape = 2;
+// GetPlayState bits: &1 = playing, &2 = paused, &4 = recording.
+constexpr int kPlayStatePlaying   = 1;
+constexpr int kPlayStatePaused    = 2;
+constexpr int kPlayStateRecording = 4;
+
+// Does REAPER hear this track's input in this transport state? Tape style
+// hears it when stopped and while recording, and plays only the take during
+// playback (User Guide, Troubleshooting appendix, "Record Modes and
+// Monitoring"). The mirror has to close the TotalMix input there too —
+// otherwise the musician hears themselves live while the take sits behind the
+// muted main send.
+// Pause is treated as stopped, like auto-talkback does; the guide's table
+// doesn't cover it. Recording counts in full: an auto-punch region (input only
+// inside it) is not modelled.
+constexpr bool hearsInput(int recMon, int playState) {
+    if (recMon == kRecMonOff) return false;
+    if (recMon != kRecMonTape) return true;
+    const bool recording = (playState & kPlayStateRecording) != 0;
+    const bool playing = (playState & kPlayStatePlaying) != 0
+                      && (playState & kPlayStatePaused) == 0;
+    return recording || !playing;
+}
+static_assert(!hearsInput(0, 0) && !hearsInput(0, 1) && !hearsInput(0, 5),
+              "monitoring off never hears the input");
+static_assert(hearsInput(1, 0) && hearsInput(1, 1) && hearsInput(1, 5),
+              "normal monitoring always hears the input");
+static_assert(hearsInput(2, 0), "tape style: stopped hears the input");
+static_assert(!hearsInput(2, 1), "tape style: playback is the take only");
+static_assert(hearsInput(2, 3), "tape style: paused hears the input");
+static_assert(hearsInput(2, 5), "tape style: recording hears the input");
+static_assert(hearsInput(2, 7), "tape style: paused recording hears the input");
+
+bool hearsInputNow(int recMon) {
+    return hearsInput(recMon, GetPlayState());
+}
+
 // Compute the per-input balpan values from REAPER's pan model. Returns
 // (panL, panR) where panR is meaningful only for stereo inputs.
 struct PanPair { float L; float R; };
@@ -281,7 +321,7 @@ void TotalReaperCSurf::setEnabled(bool enabled) {
         const bool muted = GetMediaTrackInfo_Value(tr, "B_MUTE") != 0;
         const int hwIdx = hwStartChannel(recInput);
         // Same gate processTrack uses — see comment there.
-        if (recMon == 0 || muted || hwIdx < 0) continue;
+        if (!hearsInputNow(recMon) || muted || hwIdx < 0) continue;
         if (!isPrimaryOwnerForHwIdx_(tr, hwIdx)) continue;
         updateTrackRouting(tr);
     }
@@ -540,7 +580,7 @@ bool TotalReaperCSurf::isPrimaryOwnerForHwIdx_(MediaTrack* tr, int hwIdx) {
         const int rIn = static_cast<int>(GetMediaTrackInfo_Value(t, "I_RECINPUT"));
         if (hwStartChannel(rIn) != hwIdx) continue;
         const int rMon = static_cast<int>(GetMediaTrackInfo_Value(t, "I_RECMON"));
-        if (rMon == 0) continue;
+        if (!hearsInputNow(rMon)) continue;
         const int rArm = static_cast<int>(GetMediaTrackInfo_Value(t, "I_RECARM"));
         if (rArm != 0) {
             if (armedPrimary == nullptr) armedPrimary = t;
@@ -564,7 +604,9 @@ void TotalReaperCSurf::processTrack(MediaTrack* tr) {
     const int hwIdx = hwStartChannel(recInput);
     // "currently active" gate:
     //   1. Valid hardware input (excludes MIDI / multichannel / no input).
-    //   2. Monitoring on (recMon != 0).
+    //   2. REAPER hears the input right now (hearsInput — tape style drops
+    //      out during playback). Run() re-evaluates every tick, so a
+    //      transport change opens or closes the input on its own.
     //   3. This track is the elected primary owner for its hwIdx — see
     //      isPrimaryOwnerForHwIdx_. Tracks sharing an input that aren't the
     //      primary are dormant: they don't push, they don't cache. If the
@@ -573,7 +615,7 @@ void TotalReaperCSurf::processTrack(MediaTrack* tr) {
     //   4. Not channel-muted — REAPER's mute button should silence the
     //      matrix cells we own for this input.
     const bool currActive = (hwIdx >= 0
-                          && recMon != 0
+                          && hearsInputNow(recMon)
                           && !trackMuted
                           && isPrimaryOwnerForHwIdx_(tr, hwIdx));
 
@@ -683,7 +725,7 @@ void TotalReaperCSurf::updateTrackRouting(MediaTrack* tr) {
     const double dualPanR = GetMediaTrackInfo_Value(tr, "D_DUALPANR");
     const int panMode = static_cast<int>(GetMediaTrackInfo_Value(tr, "I_PANMODE"));
 
-    const float mainDb = (recMon != 0) ? linToClampedDb(linVol) : kMinusInfDb;
+    const float mainDb = hearsInputNow(recMon) ? linToClampedDb(linVol) : kMinusInfDb;
     const bool nowActive = (mainDb > kMinusInfDb);
 
     // Mute REAPER's software monitor while we're driving the channel from

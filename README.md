@@ -33,6 +33,11 @@ source of truth for the TotalMix input matrix:
   a monitored track solos its input on the main out (the others dim, the
   soloed one stays audible); the cue/phones submixes are left untouched so
   each keeps its own balance.
+- Tape-style monitoring (*Monitor input (tape auto style)*) follows the
+  transport the way REAPER does: the input is open in TotalMix when stopped
+  and while recording, and closed during playback, so you hear the take
+  instead of the live input. Auto-punch regions are not followed yet; while
+  recording, the input stays open for the whole pass.
 - Stereo input tracks emit fader/pan/width for both halves of the pair.
 - Track-to-track sends → matrix routings to the destination bus, with
   per-send level/pan respected.
