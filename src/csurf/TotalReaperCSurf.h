@@ -4,7 +4,9 @@
 //   1. Input monitoring → /mix/in/<n>/<main>/fader. The main bus is the
 //      master track's first HW send. Tape-style monitoring follows the
 //      transport like REAPER does: input open when stopped and while
-//      recording, closed during playback so the take is heard instead.
+//      recording, closed during playback so the take is heard instead. With
+//      auto-punch (time selection or selected items) the input opens only
+//      inside the punch region.
 //   2. Track-to-track sends that eventually reach a hardware output, which
 //      add per-bus routings: /mix/in/<n>/<destbus>/fader. Walks send chains
 //      recursively, multiplying intermediate track faders for post-fader

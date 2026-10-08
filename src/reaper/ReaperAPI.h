@@ -19,18 +19,25 @@
 #define REAPERAPI_MINIMAL
 
 #define REAPERAPI_WANT_CountSelectedTracks
+#define REAPERAPI_WANT_CountTrackMediaItems
 #define REAPERAPI_WANT_CountTracks
 #define REAPERAPI_WANT_get_ini_file
 #define REAPERAPI_WANT_GetExtState
 #define REAPERAPI_WANT_GetMasterTrack
+#define REAPERAPI_WANT_GetMediaItemInfo_Value
 #define REAPERAPI_WANT_GetMediaTrackInfo_Value
+#define REAPERAPI_WANT_GetPlayPosition
 #define REAPERAPI_WANT_GetPlayState
 #define REAPERAPI_WANT_GetSelectedTrack
+#define REAPERAPI_WANT_GetSet_LoopTimeRange
 #define REAPERAPI_WANT_GetSetMediaTrackInfo_String
+#define REAPERAPI_WANT_GetToggleCommandState
 #define REAPERAPI_WANT_GetTrack
+#define REAPERAPI_WANT_GetTrackMediaItem
 #define REAPERAPI_WANT_GetTrackNumSends
 #define REAPERAPI_WANT_GetTrackSendInfo_Value
 #define REAPERAPI_WANT_HasExtState
+#define REAPERAPI_WANT_IsMediaItemSelected
 #define REAPERAPI_WANT_RefreshToolbar2
 #define REAPERAPI_WANT_SetExtState
 #define REAPERAPI_WANT_SetMediaTrackInfo_Value

@@ -36,8 +36,9 @@ source of truth for the TotalMix input matrix:
 - Tape-style monitoring (*Monitor input (tape auto style)*) follows the
   transport the way REAPER does: the input is open in TotalMix when stopped
   and while recording, and closed during playback, so you hear the take
-  instead of the live input. Auto-punch regions are not followed yet; while
-  recording, the input stays open for the whole pass.
+  instead of the live input. With auto-punch (time selection or selected
+  items) the input opens only inside the punch region while recording, so
+  the take plays up to the punch-in and you hear yourself from there.
 - Stereo input tracks emit fader/pan/width for both halves of the pair.
 - Track-to-track sends → matrix routings to the destination bus, with
   per-send level/pan respected.

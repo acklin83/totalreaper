@@ -126,29 +126,88 @@ constexpr int kPlayStateRecording = 4;
 // Monitoring"). The mirror has to close the TotalMix input there too —
 // otherwise the musician hears themselves live while the take sits behind the
 // muted main send.
+// With auto-punch, tape style hears the input only inside the punch region and
+// the take outside it (same table) — `inPunch`. Normal monitoring ignores
+// punch: it hears the input for the whole pass. "Monitor track media when
+// recording" only changes what REAPER plays of the take, never the input, so
+// it doesn't enter here.
 // Pause is treated as stopped, like auto-talkback does; the guide's table
-// doesn't cover it. Recording counts in full: an auto-punch region (input only
-// inside it) is not modelled.
-constexpr bool hearsInput(int recMon, int playState) {
+// doesn't cover it.
+constexpr bool hearsInput(int recMon, int playState, bool inPunch) {
     if (recMon == kRecMonOff) return false;
     if (recMon != kRecMonTape) return true;
-    const bool recording = (playState & kPlayStateRecording) != 0;
-    const bool playing = (playState & kPlayStatePlaying) != 0
-                      && (playState & kPlayStatePaused) == 0;
-    return recording || !playing;
+    if ((playState & kPlayStatePaused) != 0) return true;
+    if ((playState & kPlayStateRecording) != 0) return inPunch;
+    return (playState & kPlayStatePlaying) == 0;
 }
-static_assert(!hearsInput(0, 0) && !hearsInput(0, 1) && !hearsInput(0, 5),
+static_assert(!hearsInput(0, 0, true) && !hearsInput(0, 1, true)
+              && !hearsInput(0, 5, true),
               "monitoring off never hears the input");
-static_assert(hearsInput(1, 0) && hearsInput(1, 1) && hearsInput(1, 5),
-              "normal monitoring always hears the input");
-static_assert(hearsInput(2, 0), "tape style: stopped hears the input");
-static_assert(!hearsInput(2, 1), "tape style: playback is the take only");
-static_assert(hearsInput(2, 3), "tape style: paused hears the input");
-static_assert(hearsInput(2, 5), "tape style: recording hears the input");
-static_assert(hearsInput(2, 7), "tape style: paused recording hears the input");
+static_assert(hearsInput(1, 0, false) && hearsInput(1, 1, false)
+              && hearsInput(1, 5, false),
+              "normal monitoring always hears the input, punch or not");
+static_assert(hearsInput(2, 0, false), "tape style: stopped hears the input");
+static_assert(!hearsInput(2, 1, true), "tape style: playback is the take only");
+static_assert(hearsInput(2, 3, false), "tape style: paused hears the input");
+static_assert(hearsInput(2, 5, true), "tape style: inside the punch hears the input");
+static_assert(!hearsInput(2, 5, false), "tape style: outside the punch is the take");
+static_assert(hearsInput(2, 7, false), "tape style: paused recording hears the input");
 
-bool hearsInputNow(int recMon) {
-    return hearsInput(recMon, GetPlayState());
+// REAPER's record-mode actions (Options > Record mode). The three are a radio
+// group; the checked one is the active record mode. If REAPER reports no
+// toggle state for them, both read as unchecked and the whole pass counts as
+// the punch — tape style then behaves as without auto-punch.
+constexpr int kCmdRecModeSelectedItemsPunch = 40253;
+constexpr int kCmdRecModeTimeSelectionPunch = 40076;
+
+// The mirror switches on the Run() tick (30 Hz), REAPER on the sample. Opening
+// one tick plus margin early means the musician hears themselves on time at
+// punch-in; closing up to a tick late at punch-out costs nothing.
+constexpr double kPunchLookaheadSec = 0.05;
+
+constexpr bool inPunchRegion(double pos, double start, double end) {
+    return pos >= start - kPunchLookaheadSec && pos < end;
+}
+static_assert(inPunchRegion(10.0, 10.0, 20.0), "punch-in opens");
+static_assert(inPunchRegion(9.97, 10.0, 20.0), "punch-in opens a tick early");
+static_assert(!inPunchRegion(9.0, 10.0, 20.0), "before the punch is the take");
+static_assert(!inPunchRegion(20.0, 10.0, 20.0), "punch-out closes");
+
+// Is the play position inside this track's punch region? Without auto-punch the
+// whole pass is the punch. A punch mode with no region (no time selection, no
+// selected item on the track) also counts as the whole pass: hearing yourself
+// when nothing is recorded beats recording blind.
+bool inPunchNow(MediaTrack* tr) {
+    const double pos = GetPlayPosition();  // what the musician hears
+    if (GetToggleCommandState(kCmdRecModeTimeSelectionPunch) == 1) {
+        double start = 0.0, end = 0.0;
+        GetSet_LoopTimeRange(false, /*isLoop*/ false, &start, &end, false);
+        return end <= start || inPunchRegion(pos, start, end);
+    }
+    if (GetToggleCommandState(kCmdRecModeSelectedItemsPunch) == 1) {
+        // REAPER records into the selected items, so the region is this
+        // track's own selected items.
+        bool anySelected = false;
+        const int itemCount = CountTrackMediaItems(tr);
+        for (int i = 0; i < itemCount; ++i) {
+            MediaItem* item = GetTrackMediaItem(tr, i);
+            if (item == nullptr || !IsMediaItemSelected(item)) continue;
+            anySelected = true;
+            const double start = GetMediaItemInfo_Value(item, "D_POSITION");
+            const double end = start + GetMediaItemInfo_Value(item, "D_LENGTH");
+            if (inPunchRegion(pos, start, end)) return true;
+        }
+        return !anySelected;
+    }
+    return true;
+}
+
+bool hearsInputNow(MediaTrack* tr, int recMon) {
+    const int playState = GetPlayState();
+    // Only tape style while recording asks where the punch is.
+    const bool askPunch = recMon == kRecMonTape
+                       && (playState & kPlayStateRecording) != 0;
+    return hearsInput(recMon, playState, askPunch ? inPunchNow(tr) : true);
 }
 
 // Compute the per-input balpan values from REAPER's pan model. Returns
@@ -321,7 +380,7 @@ void TotalReaperCSurf::setEnabled(bool enabled) {
         const bool muted = GetMediaTrackInfo_Value(tr, "B_MUTE") != 0;
         const int hwIdx = hwStartChannel(recInput);
         // Same gate processTrack uses — see comment there.
-        if (!hearsInputNow(recMon) || muted || hwIdx < 0) continue;
+        if (!hearsInputNow(tr, recMon) || muted || hwIdx < 0) continue;
         if (!isPrimaryOwnerForHwIdx_(tr, hwIdx)) continue;
         updateTrackRouting(tr);
     }
@@ -580,7 +639,7 @@ bool TotalReaperCSurf::isPrimaryOwnerForHwIdx_(MediaTrack* tr, int hwIdx) {
         const int rIn = static_cast<int>(GetMediaTrackInfo_Value(t, "I_RECINPUT"));
         if (hwStartChannel(rIn) != hwIdx) continue;
         const int rMon = static_cast<int>(GetMediaTrackInfo_Value(t, "I_RECMON"));
-        if (!hearsInputNow(rMon)) continue;
+        if (!hearsInputNow(t, rMon)) continue;
         const int rArm = static_cast<int>(GetMediaTrackInfo_Value(t, "I_RECARM"));
         if (rArm != 0) {
             if (armedPrimary == nullptr) armedPrimary = t;
@@ -615,7 +674,7 @@ void TotalReaperCSurf::processTrack(MediaTrack* tr) {
     //   4. Not channel-muted — REAPER's mute button should silence the
     //      matrix cells we own for this input.
     const bool currActive = (hwIdx >= 0
-                          && hearsInputNow(recMon)
+                          && hearsInputNow(tr, recMon)
                           && !trackMuted
                           && isPrimaryOwnerForHwIdx_(tr, hwIdx));
 
@@ -725,7 +784,8 @@ void TotalReaperCSurf::updateTrackRouting(MediaTrack* tr) {
     const double dualPanR = GetMediaTrackInfo_Value(tr, "D_DUALPANR");
     const int panMode = static_cast<int>(GetMediaTrackInfo_Value(tr, "I_PANMODE"));
 
-    const float mainDb = hearsInputNow(recMon) ? linToClampedDb(linVol) : kMinusInfDb;
+    const float mainDb =
+        hearsInputNow(tr, recMon) ? linToClampedDb(linVol) : kMinusInfDb;
     const bool nowActive = (mainDb > kMinusInfDb);
 
     // Mute REAPER's software monitor while we're driving the channel from
