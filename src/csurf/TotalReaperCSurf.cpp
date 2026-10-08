@@ -666,6 +666,8 @@ void TotalReaperCSurf::processTrack(MediaTrack* tr) {
     //   2. REAPER hears the input right now (hearsInput — tape style drops
     //      out during playback). Run() re-evaluates every tick, so a
     //      transport change opens or closes the input on its own.
+    //      Rec-arm is deliberately not required: monitoring is monitoring,
+    //      armed or not (Frank, 08.10.2026).
     //   3. This track is the elected primary owner for its hwIdx — see
     //      isPrimaryOwnerForHwIdx_. Tracks sharing an input that aren't the
     //      primary are dormant: they don't push, they don't cache. If the
