@@ -302,11 +302,11 @@ private:
     void applyIncomingPreamp(int hwIdx, std::string extKey,
                              std::string value);
 
-    // Find the first track whose I_RECINPUT maps to exactly `hwIdx` as its
-    // left/start channel. Returns nullptr if none. "First" = lowest index in
-    // REAPER's track order — matches user expectation when multiple tracks
-    // share an input.
-    MediaTrack* findFirstTrackForHwIdx(int hwIdx);
+    // The track the routing mirror currently drives for `hwIdx` (its left /
+    // start channel, through the [alias_in_*] map) — the input's primary
+    // owner while it hears that input. nullptr if no mirrored track has it:
+    // then 2-Way leaves REAPER alone.
+    MediaTrack* findMirroredTrackForHwIdx(int hwIdx);
 
     // Returns true if `tr` is the elected "primary owner" for `hwIdx`.
     // Election rule, in priority order:

@@ -1438,7 +1438,18 @@ void TotalReaperCSurf::onIncomingWidth(int hwIdx, float width) {
     }
 }
 
-MediaTrack* TotalReaperCSurf::findFirstTrackForHwIdx(int hwIdx) {
+MediaTrack* TotalReaperCSurf::findMirroredTrackForHwIdx(int hwIdx) {
+    // ⛔ ONLY THE TRACK THE MIRROR DRIVES. Up to 0.2.7 this took the first
+    // track with that input, monitored or not, so a fader moved in TotalMix
+    // changed a track TotalReaper wasn't mirroring at all — monitoring off, or
+    // tape style during playback (Frank 11.10.2026) — and with two tracks on
+    // one input it could hit the one that isn't the owner. states_ holds
+    // exactly the tracks processTrack currently drives: the primary owner of
+    // each input while it hears that input; a track leaves it the tick it
+    // stops. Same rule as busInScope_: what we don't write we don't read.
+    // Walked via the project's live tracks rather than states_ itself, because
+    // states_ can still hold a deleted track's pointer.
+    //
     // TotalMix-side addresses are hardware indices, REAPER-side I_RECINPUT
     // stores REAPER-slot indices, and reaper.ini's [alias_in_*] map translates
     // between them. sendFader applies that map on the way out; for the rx
@@ -1450,7 +1461,7 @@ MediaTrack* TotalReaperCSurf::findFirstTrackForHwIdx(int hwIdx) {
     const int trackCount = CountTracks(nullptr);
     for (int i = 0; i < trackCount; ++i) {
         MediaTrack* tr = GetTrack(nullptr, i);
-        if (tr == nullptr) continue;
+        if (tr == nullptr || states_.count(tr) == 0) continue;
         const int recInput =
             static_cast<int>(GetMediaTrackInfo_Value(tr, "I_RECINPUT"));
         const int leftCh = hwStartChannel(recInput);
@@ -1523,7 +1534,7 @@ void TotalReaperCSurf::applyIncomingFader(int hwIdx, int bus, float db) {
     // bus we ignore has no echo of ours to suppress.
     if (!busInScope_(bus)) return;
 
-    MediaTrack* tr = findFirstTrackForHwIdx(hwIdx);
+    MediaTrack* tr = findMirroredTrackForHwIdx(hwIdx);
     if (tr == nullptr) return;
 
     // Pre-set the echo cache to the value we're about to drive REAPER to.
@@ -1571,7 +1582,7 @@ void TotalReaperCSurf::applyIncomingBalpan(int hwIdx, int bus, float balpan) {
     if (!enabled_.load() || !twoWayEnabled_.load()) return;
     if (!busInScope_(bus)) return;   // see applyIncomingFader
 
-    MediaTrack* tr = findFirstTrackForHwIdx(hwIdx);
+    MediaTrack* tr = findMirroredTrackForHwIdx(hwIdx);
     if (tr == nullptr) return;
 
     const int recInput =
@@ -1614,7 +1625,7 @@ void TotalReaperCSurf::applyIncomingWidth(int hwIdx, float width) {
     if (!enabled_.load() || !twoWayEnabled_.load()) return;
     // Width only applies to pairs we manage as a linked stereo strip.
     if (stereoLinked_.count(hwIdx) == 0) return;
-    MediaTrack* tr = findFirstTrackForHwIdx(hwIdx);
+    MediaTrack* tr = findMirroredTrackForHwIdx(hwIdx);
     if (tr == nullptr) return;
     const int recInput =
         static_cast<int>(GetMediaTrackInfo_Value(tr, "I_RECINPUT"));
