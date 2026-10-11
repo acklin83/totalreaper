@@ -16,7 +16,7 @@ in real time. Not yet ready for unattended production use.
 
 ---
 
-## What it does today (v0.2.7)
+## What it does today (v0.2.8)
 
 > macOS (arm64 + Intel) and **Windows** (x64). Install via ReaPack or grab the
 > binary from the latest GitHub release.
@@ -59,10 +59,19 @@ so a separate cue mixer driving those submixes on the interface, a client
 turning up their own headphones, does not rewrite REAPER's send levels behind
 you. Turning the option back off re-pushes the other buses on the next tick.
 
+**Send Only Changes** (settings window, on by default) sends a fader, pan or
+solo value to TotalMix when it changes in REAPER, and all of them again once a
+second. Up to 0.2.7 every value went out again on every update: with one
+monitored mono track that measured about 100 OSC messages a second while
+nothing moved, now 3. A change made in TotalMix itself with 2-Way off is set
+back to REAPER's value within a second. Turn it off for the 0.2.7 behaviour.
+
 **TotalReaper: Toggle 2-Way Control** — on top of the routing mirror, this
 toggle adds the reverse direction: moving a fader or balpan in TotalMix
-also moves the matching REAPER track / send. First REAPER track whose
-input maps to the hardware channel wins. Echo-suppression is value-based,
+also moves the matching REAPER track / send. Only the track the mirror
+currently drives for that input is written: with its monitoring off, or tape
+style during playback, a move in TotalMix leaves REAPER alone, and with two
+tracks on one input it is the one that owns it. Echo-suppression is value-based,
 so the loop stays stable.
 
 ### Per-track preamp control
@@ -114,7 +123,7 @@ Global TotalMix controls and project-state recall:
 - **OSC ports** (send to TotalMix / listen), configurable and applied live —
   no restart.
 - **Feature toggles** for Routing Mirror, Only Set Main Submix, 2-Way Control,
-  Auto-Talkback and Stereo-Pair Link. These stay in sync with the matching
+  Auto-Talkback, Stereo-Pair Link and Send Only Changes. These stay in sync with the matching
   actions and toolbar icons.
 
 Needs [ReaImGui](https://github.com/cfillion/reaimgui) (install via *Extensions
