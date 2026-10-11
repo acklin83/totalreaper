@@ -61,6 +61,43 @@ constexpr int kPreampRefreshPrimingMs = 500;
 // judges it. The answer measured on Windows arrived within 30 ms.
 constexpr int kSendallAnswerMs = 1500;
 
+// ⛔ "SEND ONLY CHANGES" (default on since 0.2.8). Up to 0.2.7 every Run()
+// tick re-sent the main-bus fader, solo and pan of every monitored track,
+// changed or not: ~3 UDP packets per mono track per tick, with nobody touching
+// anything. A user on an AES-32 card (TotalMix 2.10 beta 7) reported fader
+// moves showing up in TotalMix after 5 s, then longer with every move, up to
+// more than 20 s, reset by a restart (11.10.2026). That is a queue that fills
+// faster than TotalMix drains it; nothing on our side queues (sendto is
+// direct). Now a value goes out when it differs from what we last sent, and
+// everything staged goes out again once per kRefreshAllMs. The refresh covers
+// what the change check can't see: a move made in TotalMix itself with 2-Way
+// off, a snapshot loaded there, a lost packet, a restarted TotalMix. Frank
+// 11.10.2026: one second until TotalMix is set back is fine.
+constexpr int kRefreshAllMs = 1000;
+
+// Does this flush send everything staged, changed or not? Always with the
+// option off (the 0.2.7 behaviour), and with it on when the refresh is due or
+// a full flush was asked for (stereo-link reset, snapshot load, port change).
+constexpr bool isFullFlush(bool onlyChanges, bool requested, bool refreshDue) {
+    return !onlyChanges || requested || refreshDue;
+}
+static_assert(isFullFlush(false, false, false),
+              "option off: every value on every tick, as up to 0.2.7");
+static_assert(!isFullFlush(true, false, false),
+              "option on: between refreshes only changes go out");
+static_assert(isFullFlush(true, false, true), "the refresh repeats everything");
+static_assert(isFullFlush(true, true, false), "a requested full flush goes out at once");
+
+// Does one staged value go out? On a full flush always; otherwise only if this
+// cell was never sent or the value differs from the last one sent.
+constexpr bool needsSend(bool fullFlush, bool sentBefore, bool sameAsSent) {
+    return fullFlush || !sentBefore || !sameAsSent;
+}
+static_assert(!needsSend(false, true, true), "an unchanged value waits for the refresh");
+static_assert(needsSend(false, true, false), "a change goes out at once");
+static_assert(needsSend(false, false, false), "a cell never sent goes out at once");
+static_assert(needsSend(true, true, true), "a full flush sends unchanged values");
+
 // I_RECINPUT bit layout (per reaper_plugin_functions.h):
 //   bit 4096 → MIDI input (we skip)
 //   bit 2048 → multichannel input (we skip for now)
@@ -352,7 +389,7 @@ void TotalReaperCSurf::setEnabled(bool enabled) {
         states_.clear();
         stereoLinked_.clear();
         { std::lock_guard<std::mutex> g(rxMu_); lastSentWidth_.clear(); }
-        flushTick_();
+        flushTick_(/*full*/ true);
         return;
     }
 
@@ -386,8 +423,9 @@ void TotalReaperCSurf::setEnabled(bool enabled) {
     }
     // Flush staged routings to TotalMix before the /sendall request goes out
     // so lastSentFader_ / lastSentBalpan_ are populated against TotalMix's
-    // echo burst.
-    flushTick_();
+    // echo burst. Full: whatever TotalMix holds now, the mirror starts from
+    // REAPER's state.
+    flushTick_(/*full*/ true);
 
     // Now ask TotalMix to re-emit every current parameter so our
     // TotalMixState cache gets seeded for channel-strip controls (gain,
@@ -499,7 +537,17 @@ void TotalReaperCSurf::Run() {
     for (int i = 0; i < trackCount; ++i) {
         processTrack(GetTrack(nullptr, i));
     }
-    flushTick_();
+
+    // Only this flush consumes fullFlushRequested_: the one-shot flushes
+    // (enable, disable, partner centering) are full anyway, and one of them
+    // running first must not swallow a request meant for the tick's values.
+    const auto now = std::chrono::steady_clock::now();
+    const bool full = isFullFlush(
+        sendOnlyChanges_.load(), fullFlushRequested_,
+        now - lastFullFlush_ >= std::chrono::milliseconds(kRefreshAllMs));
+    fullFlushRequested_ = false;
+    if (full) lastFullFlush_ = now;
+    flushTick_(full);
 }
 
 void TotalReaperCSurf::pollInputReassignments_() {
@@ -738,7 +786,7 @@ void TotalReaperCSurf::processTrack(MediaTrack* tr) {
             scheduleAfter(kStereoPanReassertMs,
                           [this, partnerCh, pairBuses]() {
                 for (int bus : pairBuses) sendBalpan(partnerCh, bus, 0.0f);
-                flushTick_();
+                flushTick_(/*full*/ true);
             });
         }
     }
@@ -949,8 +997,9 @@ void TotalReaperCSurf::updateTrackRouting(MediaTrack* tr) {
     // pair would otherwise never follow REAPER's pan. Assert the pair balance
     // here every tick — REAPER's track pan maps to the strip balance — sent to
     // the LEFT channel only (a linked strip has a single balpan; sending to
-    // both halves would fight). Continuous re-send also overrides TotalMix's
-    // post-toggle hard-L/R reset without a race.
+    // both halves would fight). Staged every tick, sent when it changes;
+    // TotalMix's post-toggle hard-L/R reset is overridden by the full flush
+    // sendStripStereo asks for once the reset has settled.
     if (stereoPairLink_.load() && nowActive && isStereoInput(recInput)) {
         const int leftReaperCh = hwStartChannel(recInput);
         const int leftHw = reaper::reaperInputToHardware(leftReaperCh);
@@ -1041,13 +1090,20 @@ void TotalReaperCSurf::pushInputSolo(int recInput, int bus, bool on) {
     }
 }
 
-void TotalReaperCSurf::flushTick_() {
+void TotalReaperCSurf::flushTick_(bool full) {
     if (client_ == nullptr) return;
     if (tickFader_.empty() && tickBalpan_.empty() && tickSolo_.empty()) return;
     if (!client_->isConnected()) {
         client_->connect("127.0.0.1", txPort_);
     }
+    // Compared against sent*_ (what WE sent last), deliberately not against
+    // lastSentFader_/lastSentBalpan_: those are 2-Way's echo cache, and the
+    // rx path writes TotalMix's values into them too.
     for (const auto& kv : tickFader_) {
+        const auto sent = sentFader_.find(kv.first);
+        const bool known = sent != sentFader_.end();
+        if (!needsSend(full, known, known && sent->second == kv.second.db)) continue;
+        sentFader_[kv.first] = kv.second.db;
         const int hwIdx = kv.first >> 16;
         const int bus   = kv.first & 0xFFFF;
         char path[64];
@@ -1063,6 +1119,10 @@ void TotalReaperCSurf::flushTick_() {
     }
     tickFader_.clear();
     for (const auto& kv : tickBalpan_) {
+        const auto sent = sentBalpan_.find(kv.first);
+        const bool known = sent != sentBalpan_.end();
+        if (!needsSend(full, known, known && sent->second == kv.second.balpan)) continue;
+        sentBalpan_[kv.first] = kv.second.balpan;
         const int hwIdx = kv.first >> 16;
         const int bus   = kv.first & 0xFFFF;
         char path[64];
@@ -1078,6 +1138,10 @@ void TotalReaperCSurf::flushTick_() {
     }
     tickBalpan_.clear();
     for (const auto& kv : tickSolo_) {
+        const auto sent = sentSolo_.find(kv.first);
+        const bool known = sent != sentSolo_.end();
+        if (!needsSend(full, known, known && sent->second == kv.second.on)) continue;
+        sentSolo_[kv.first] = kv.second.on;
         const int hwIdx = kv.first >> 16;
         const int bus   = kv.first & 0xFFFF;
         char path[64];
@@ -1183,6 +1247,16 @@ void TotalReaperCSurf::setOnlyMainSubmix(bool enabled) {
     for (auto& kv : states_) {
         kv.second.sendRoutings.clear();
     }
+    // And send them in full: switched off, sentFader_ still holds what went
+    // out before it was switched on, while someone else mixed those buses.
+    fullFlushRequested_ = true;
+}
+
+void TotalReaperCSurf::setSendOnlyChanges(bool enabled) {
+    if (enabled == sendOnlyChanges_.load()) return;
+    sendOnlyChanges_.store(enabled);
+    SetExtState("TotalReaper", "SendOnlyChanges", enabled ? "1" : "0",
+                /*persist*/ true);
 }
 
 bool TotalReaperCSurf::stereoEchoMutedLocked_(int hwIdx) {
@@ -1217,12 +1291,16 @@ void TotalReaperCSurf::sendStripStereo(int hwIdx, bool on) {
     }
 
     // TotalMix resets balpan to hard L/R on every routed bus as a side effect
-    // of a stereo-link toggle. The main bus self-heals (its balpan is re-sent
-    // every tick), but per-bus send routings are pan-deduped and would stay at
-    // hard L/R. Re-assert REAPER's pan AFTER the reset settles: deferred so it
-    // lands after TotalMix's toggle cascade, then invalidate the per-bus pan
-    // dedupe so the next Run() tick re-pushes balpan for this input.
+    // of a stereo-link toggle, and nothing we send tells us so: the values we
+    // last sent haven't changed. Re-assert REAPER's pan AFTER the reset
+    // settles: deferred so it lands after TotalMix's toggle cascade, then
+    // invalidate the per-bus pan dedupe so the next Run() tick re-stages
+    // balpan for this input, and ask for a full flush so that tick sends the
+    // main bus too. Up to 0.2.7 the main bus healed by itself, re-sent every
+    // tick; with "send only changes" it would sit at hard L/R until the
+    // refresh.
     scheduleAfter(kStereoPanReassertMs, [this, hwIdx]() {
+        fullFlushRequested_ = true;
         for (auto& kv : states_) {
             TrackState& st = kv.second;
             if (reaper::reaperInputToHardware(hwStartChannel(st.recInput)) != hwIdx) {

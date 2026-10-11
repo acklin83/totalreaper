@@ -96,7 +96,10 @@ public:
     // Live OSC send-port change (settings window). The next flush reconnects
     // the client to this port; the caller also reconnects the shared client.
     // Main-thread only.
-    void setTxPort(std::uint16_t port) noexcept { txPort_ = port; }
+    void setTxPort(std::uint16_t port) noexcept {
+        txPort_ = port;
+        fullFlushRequested_ = true; // a new target has heard nothing yet
+    }
 
     // Stereo-pair link: when on, REAPER stereo inputs ask TotalMix to link
     // their two hardware channels into one stereo strip. Link-only — turning
@@ -116,6 +119,18 @@ public:
     // hand-built cue mixes with it. Persisted in ExtState.
     void setOnlyMainSubmix(bool enabled);
     bool isOnlyMainSubmix() const noexcept { return onlyMainSubmix_.load(); }
+
+    // Send only changes (default on): a routing value goes to TotalMix when it
+    // differs from the last one sent, and everything again once a second. Off
+    // is the behaviour up to 0.2.7, every value on every Run() tick. See
+    // kRefreshAllMs in the .cpp for why. Persisted in ExtState.
+    void setSendOnlyChanges(bool enabled);
+    bool isSendOnlyChanges() const noexcept { return sendOnlyChanges_.load(); }
+
+    // Send every staged value on the next Run() tick, changed or not. For
+    // whoever changed TotalMix behind the change check's back (snapshot load).
+    // Main-thread only.
+    void requestFullFlush() noexcept { fullFlushRequested_ = true; }
 
     // Called from the OSC receive thread when TotalMix reports a fader or
     // balpan value for /mix/in/<hwIdx>/<bus>/{fader,balpan}. Performs
@@ -344,9 +359,24 @@ private:
     std::unordered_map<EchoKey, PendingFader>  tickFader_;
     std::unordered_map<EchoKey, PendingBalpan> tickBalpan_;
     std::unordered_map<EchoKey, PendingSolo>   tickSolo_;
-    // Flush tickFader_ / tickBalpan_ to the OSC client + lastSent caches +
-    // TX log. Called once at end of Run().
-    void flushTick_();
+    // Flush tickFader_ / tickBalpan_ / tickSolo_ to the OSC client + lastSent
+    // caches + TX log. `full` sends every staged value; otherwise only those
+    // that differ from sent*_ ("send only changes"). Run() decides per tick;
+    // the one-shot callers (enable, disable, partner centering) pass true.
+    void flushTick_(bool full);
+
+    // What we last sent per matrix cell, for "send only changes". Separate
+    // from lastSentFader_/lastSentBalpan_ on purpose: those double as 2-Way's
+    // echo cache and the rx path writes TotalMix's values into them. Main
+    // thread only.
+    std::unordered_map<EchoKey, float> sentFader_;
+    std::unordered_map<EchoKey, float> sentBalpan_;
+    std::unordered_map<EchoKey, bool>  sentSolo_;
+    // Set by whatever knows TotalMix no longer holds what we sent (stereo-link
+    // reset, snapshot load, bus scope or port change); consumed by Run()'s
+    // flush only. Main thread only.
+    bool fullFlushRequested_ = false;
+    std::chrono::steady_clock::time_point lastFullFlush_{};
 
     // Queue of main-thread callbacks produced by onIncoming*. Drained at
     // the top of every Run() tick. Guarded by rxMu_.
@@ -366,6 +396,7 @@ private:
     std::atomic<bool> autoTalkbackEnabled_{false}; // drive talkback from transport state
     std::atomic<bool> stereoPairLink_{false};      // link REAPER stereo inputs in TotalMix
     std::atomic<bool> onlyMainSubmix_{false};      // write the master's bus, leave the rest alone
+    std::atomic<bool> sendOnlyChanges_{true};      // unchanged values only with the 1 s refresh
 
     // Left hardware channels we've already sent a stereo-link for, so we don't
     // re-send every tick. Cleared on mirror-disable and on link-off. Written

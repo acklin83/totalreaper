@@ -76,6 +76,10 @@ void runSnapshotLoad(int slot1Based) {
     osc::Message m(path);
     m.addFloat(1.0f);
     oscClient()->send(m);
+    // The snapshot rewrites matrix cells the mirror owns, and the mirror's
+    // change check can't see that. Up to 0.2.7 the next tick set them back;
+    // a full flush keeps it that way instead of waiting for the refresh.
+    if (auto* surf = csurfInstance()) surf->requestFullFlush();
 }
 
 } // namespace

@@ -152,6 +152,15 @@ void drawContents() {
         ImGui::TextWrapped(g_ctx,
             "Stereo link is one-way: turning it off does not unlink existing "
             "pairs in TotalMix.");
+
+        bool onlyChanges = g_surf->isSendOnlyChanges();
+        if (ImGui::Checkbox(g_ctx, "Send only changes", &onlyChanges)) {
+            g_surf->setSendOnlyChanges(onlyChanges);
+        }
+        ImGui::TextWrapped(g_ctx,
+            "A fader, pan or solo value goes to TotalMix when it changes in "
+            "REAPER, and all of them again once a second. Turned off, every "
+            "value is sent again on every update, as up to version 0.2.7.");
     }
 }
 

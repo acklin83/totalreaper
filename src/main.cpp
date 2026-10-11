@@ -287,6 +287,13 @@ REAPER_PLUGIN_DLL_EXPORT int ReaperPluginEntry(REAPER_PLUGIN_HINSTANCE /*hInstan
             g_csurf->setOnlyMainSubmix(true);
         }
     }
+    // Default on, so only an explicit "0" switches it off.
+    if (HasExtState("TotalReaper", "SendOnlyChanges")) {
+        const char* v = GetExtState("TotalReaper", "SendOnlyChanges");
+        if (v && v[0] == '0') {
+            g_csurf->setSendOnlyChanges(false);
+        }
+    }
 
     totalreaper::reaper::debugLog("[TotalReaper] loaded — "
                                   "find actions in Action List by typing 'TotalReaper'");
