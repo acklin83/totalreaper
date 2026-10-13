@@ -16,7 +16,7 @@ in real time. Not yet ready for unattended production use.
 
 ---
 
-## What it does today (v0.2.8)
+## What it does today (v0.2.9)
 
 > macOS (arm64 + Intel) and **Windows** (x64). Install via ReaPack or grab the
 > binary from the latest GitHub release.
@@ -121,7 +121,9 @@ Global TotalMix controls and project-state recall:
 **TotalReaper: Open Settings Window** opens a small panel for:
 
 - **OSC ports** (send to TotalMix / listen), configurable and applied live —
-  no restart.
+  no restart. Applying asks TotalMix for its values again, and the note under
+  the ports (TotalMix does not answer, or answers without channel values)
+  clears itself as soon as TotalMix does answer.
 - **Feature toggles** for Routing Mirror, Only Set Main Submix, 2-Way Control,
   Auto-Talkback, Stereo-Pair Link and Send Only Changes. These stay in sync with the matching
   actions and toolbar icons.
