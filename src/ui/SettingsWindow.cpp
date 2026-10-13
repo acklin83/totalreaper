@@ -90,6 +90,9 @@ void applyPorts() {
         g_status = "Could not bind listen port — kept " +
                    std::to_string(g_activeListenPort) + ".";
     }
+    // New ports, new question: the TotalMix hint below came from a /sendall
+    // over the old ones and would otherwise stay up (Cockos forum, 12.10.2026).
+    if (g_surf != nullptr) g_surf->requestPreampRefresh();
 }
 
 void drawContents() {

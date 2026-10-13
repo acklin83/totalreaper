@@ -61,6 +61,51 @@ constexpr int kPreampRefreshPrimingMs = 500;
 // judges it. The answer measured on Windows arrived within 30 ms.
 constexpr int kSendallAnswerMs = 1500;
 
+// ⛔ THE VERDICT IS NOT FINAL. Up to 0.2.8 watchSendallAnswer_ judged once,
+// 1.5 s after a /sendall, and nothing asked again: not "Apply ports", not
+// TotalMix starting to talk later. A user saw "TotalMix does not answer" stay
+// in the settings window while both directions worked (Cockos forum,
+// 12.10.2026). recheckAnswer_ looks at TotalMix's traffic since the verdict on
+// every tick: a channel value proves it answers and sends changes; anything at
+// all after "no answer" is worth a fresh /sendall, whose own verdict then
+// says what it is. While a /sendall is out, its verdict is pending and
+// nothing is decided here.
+enum class AnswerRecheck { Keep, Ok, AskAgain };
+constexpr AnswerRecheck recheckAnswer(TotalReaperCSurf::TotalMixAnswer verdict,
+                                      bool valuesSince, bool messagesSince,
+                                      bool asking) {
+    using A = TotalReaperCSurf::TotalMixAnswer;
+    if (asking) return AnswerRecheck::Keep;
+    if (verdict != A::NoAnswer && verdict != A::LevelsOnly) return AnswerRecheck::Keep;
+    if (valuesSince) return AnswerRecheck::Ok;
+    if (verdict == A::NoAnswer && messagesSince) return AnswerRecheck::AskAgain;
+    return AnswerRecheck::Keep;
+}
+static_assert(recheckAnswer(TotalReaperCSurf::TotalMixAnswer::NoAnswer, false, true, false)
+                  == AnswerRecheck::AskAgain,
+              "no answer, then TotalMix talks: ask again");
+static_assert(recheckAnswer(TotalReaperCSurf::TotalMixAnswer::NoAnswer, true, true, false)
+                  == AnswerRecheck::Ok,
+              "no answer, then a channel value: it answers");
+static_assert(recheckAnswer(TotalReaperCSurf::TotalMixAnswer::LevelsOnly, true, true, false)
+                  == AnswerRecheck::Ok,
+              "levels only, then a channel value: send changes is on");
+static_assert(recheckAnswer(TotalReaperCSurf::TotalMixAnswer::LevelsOnly, false, true, false)
+                  == AnswerRecheck::Keep,
+              "levels only and more levels: still no channel values");
+static_assert(recheckAnswer(TotalReaperCSurf::TotalMixAnswer::NoAnswer, false, false, false)
+                  == AnswerRecheck::Keep,
+              "still silent: the hint stays");
+static_assert(recheckAnswer(TotalReaperCSurf::TotalMixAnswer::NoAnswer, true, true, true)
+                  == AnswerRecheck::Keep,
+              "a /sendall is out: its own verdict decides");
+static_assert(recheckAnswer(TotalReaperCSurf::TotalMixAnswer::Ok, false, true, false)
+                  == AnswerRecheck::Keep,
+              "ok stays ok");
+static_assert(recheckAnswer(TotalReaperCSurf::TotalMixAnswer::Unknown, true, true, false)
+                  == AnswerRecheck::Keep,
+              "before the first /sendall there is nothing to correct");
+
 // ⛔ "SEND ONLY CHANGES" (default on since 0.2.8). Up to 0.2.7 every Run()
 // tick re-sent the main-bus fader, solo and pan of every monitored track,
 // changed or not: ~3 UDP packets per mono track per tick, with nobody touching
@@ -531,6 +576,8 @@ void TotalReaperCSurf::Run() {
     // routing mirror off (see onIncomingPreamp), so the refresh that keeps it
     // honest has to work there too.
     pollInputReassignments_();
+    // Also before the gate: the settings window shows the hint either way.
+    recheckAnswer_();
 
     if (!enabled_.load()) return;
     const int trackCount = CountTracks(nullptr);
@@ -657,15 +704,39 @@ void TotalReaperCSurf::watchSendallAnswer_()
     if (st == nullptr) return;
     const unsigned msgs = st->messageCount();
     const unsigned vals = st->channelValueCount();
+    ++sendallWatches_;
     scheduleAfter(kSendallAnswerMs, [this, st, msgs, vals]() {
+        --sendallWatches_;
         const TotalMixAnswer now =
               st->channelValueCount() != vals ? TotalMixAnswer::Ok
             : st->messageCount() != msgs      ? TotalMixAnswer::LevelsOnly
                                               : TotalMixAnswer::NoAnswer;
+        // What recheckAnswer_ measures "since the verdict" against.
+        answerMsgs_ = st->messageCount();
+        answerVals_ = st->channelValueCount();
         const TotalMixAnswer was = answer_.exchange(now);
         if (now != was && now != TotalMixAnswer::Ok)
             reaper::log(std::string("[TotalReaper] ") + totalMixAnswerHint(now));
     });
+}
+
+void TotalReaperCSurf::recheckAnswer_()
+{
+    osc::TotalMixState* st = actions::totalMixState();
+    if (st == nullptr) return;
+    switch (recheckAnswer(answer_.load(),
+                          st->channelValueCount() != answerVals_,
+                          st->messageCount() != answerMsgs_,
+                          sendallWatches_ > 0 || preampRefreshPending_)) {
+        case AnswerRecheck::Ok:
+            answer_.store(TotalMixAnswer::Ok);
+            break;
+        case AnswerRecheck::AskAgain:
+            requestPreampRefresh();
+            break;
+        case AnswerRecheck::Keep:
+            break;
+    }
 }
 
 void TotalReaperCSurf::scheduleAfter(int delayMs,

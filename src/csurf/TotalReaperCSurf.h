@@ -440,6 +440,14 @@ private:
     // set answer_ (see TotalMixAnswer).
     void watchSendallAnswer_();
     std::atomic<TotalMixAnswer> answer_{TotalMixAnswer::Unknown};
+    // Every tick: correct a "no answer" / "levels only" verdict from the
+    // traffic since (see recheckAnswer in the .cpp). Main thread only, like
+    // the three fields it reads: the counts at the last verdict, and how many
+    // /sendall verdicts are still pending.
+    void recheckAnswer_();
+    unsigned answerMsgs_ = 0;
+    unsigned answerVals_ = 0;
+    int sendallWatches_ = 0;
 
     // Last "rolling" state SetPlayState was called with, so we only act on
     // genuine transitions (play→stop, stop→play). REAPER tends to fire
