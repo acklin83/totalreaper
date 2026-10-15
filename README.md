@@ -68,7 +68,11 @@ back to REAPER's value within a second. Turn it off for the 0.2.7 behaviour.
 
 **TotalReaper: Toggle 2-Way Control** — on top of the routing mirror, this
 toggle adds the reverse direction: moving a fader or balpan in TotalMix
-also moves the matching REAPER track / send. Only the track the mirror
+also moves the matching REAPER track / send. On the main mix (the outputs
+the master goes to) that is the track fader and pan; on any other output it is
+the send or hardware output feeding it, since the track fader also drives the
+main mix. With no output on the master, a track whose only way out is its own
+post-fader hardware output gets its fader and pan moved instead. Only the track the mirror
 currently drives for that input is written: with its monitoring off, or tape
 style during playback, a move in TotalMix leaves REAPER alone, and with two
 tracks on one input it is the one that owns it. Echo-suppression is value-based,

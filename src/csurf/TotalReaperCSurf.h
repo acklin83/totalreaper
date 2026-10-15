@@ -334,6 +334,11 @@ private:
     // 2-way for now; returns {-1, -1} if no direct match.
     LocatedSend findDirectSendToBus(MediaTrack* source, int targetBus);
 
+    // How many non-main outputs the mirror drives for `tr` (its cached send
+    // routings); 0 for a track it doesn't mirror. Feeds twoWayTarget in the
+    // .cpp. Main thread only.
+    std::size_t mirroredRoutingCount_(MediaTrack* tr) const;
+
     // Cache of the most recent fader/balpan value we sent on each (hwIdx,
     // bus). Keyed by (hwIdx<<16)|bus. Read from rx thread, written from
     // main thread → guarded by rxMu_.

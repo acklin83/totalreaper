@@ -106,6 +106,31 @@ static_assert(recheckAnswer(TotalReaperCSurf::TotalMixAnswer::Unknown, true, tru
                   == AnswerRecheck::Keep,
               "before the first /sendall there is nothing to correct");
 
+// ⛔ WHICH REAPER CONTROL A 2-WAY MOVE ON A NON-MAIN OUTPUT DRIVES. A cue fed
+// by a send moves that send, because the track fader also drives the main mix.
+// With no output on the master there is no main mix, and a track whose one way
+// to the hardware is its own hardware output has nothing else for its fader to
+// drive: the TotalMix fader there is that track's level. Moving the output's
+// volume instead, out of sight in the routing window, looked like 2-Way doing
+// nothing (Cockos forum, 13.10.2026; Frank 14.10.2026: build it). A pre-fader
+// output ignores the fader, so it keeps moving the output.
+enum class TwoWayTarget { Send, TrackFader };
+constexpr TwoWayTarget twoWayTarget(bool hasMainBus, bool ownHwOutput,
+                                    bool postFader, std::size_t routings) {
+    return (!hasMainBus && ownHwOutput && postFader && routings == 1)
+        ? TwoWayTarget::TrackFader : TwoWayTarget::Send;
+}
+static_assert(twoWayTarget(false, true, true, 1) == TwoWayTarget::TrackFader,
+              "no master output, one own hardware output: the track fader");
+static_assert(twoWayTarget(true, true, true, 1) == TwoWayTarget::Send,
+              "with a main mix the fader belongs to it; the output keeps its send");
+static_assert(twoWayTarget(false, true, true, 2) == TwoWayTarget::Send,
+              "two ways out: moving the fader would move the other one too");
+static_assert(twoWayTarget(false, true, false, 1) == TwoWayTarget::Send,
+              "pre-fader output: the fader doesn't reach it");
+static_assert(twoWayTarget(false, false, true, 1) == TwoWayTarget::Send,
+              "a send to a cue track stays a send");
+
 // ⛔ "SEND ONLY CHANGES" (default on since 0.2.8). Up to 0.2.7 every Run()
 // tick re-sent the main-bus fader, solo and pan of every monitored track,
 // changed or not: ~3 UDP packets per mono track per tick, with nobody touching
@@ -1573,6 +1598,11 @@ TotalReaperCSurf::findDirectSendToBus(MediaTrack* source, int targetBus) {
     return {-1, -1};
 }
 
+std::size_t TotalReaperCSurf::mirroredRoutingCount_(MediaTrack* tr) const {
+    const auto it = states_.find(tr);
+    return it != states_.end() ? it->second.sendRoutings.size() : 0;
+}
+
 void TotalReaperCSurf::applyIncomingPreamp(int hwIdx, std::string extKey,
                                             std::string value) {
     // Update P_EXT on every track that maps to this hwIdx (multiple
@@ -1638,6 +1668,15 @@ void TotalReaperCSurf::applyIncomingFader(int hwIdx, int bus, float db) {
 
     const int sendMode = static_cast<int>(
         GetTrackSendInfo_Value(tr, send.category, send.index, "I_SENDMODE"));
+    if (twoWayTarget(mainBus >= 0, send.category == 1, sendMode == 0,
+                     mirroredRoutingCount_(tr)) == TwoWayTarget::TrackFader) {
+        // Forward sends fader * output volume; solve for the fader.
+        const double outVol =
+            GetTrackSendInfo_Value(tr, send.category, send.index, "D_VOL");
+        if (outVol <= 1e-9) return; // output at -inf: no fader reaches the level
+        SetMediaTrackInfo_Value(tr, "D_VOL", linVol / outVol);
+        return;
+    }
     double sendVol;
     if (sendMode == 0) {
         const double trackVol = GetMediaTrackInfo_Value(tr, "D_VOL");
@@ -1681,6 +1720,20 @@ void TotalReaperCSurf::applyIncomingBalpan(int hwIdx, int bus, float balpan) {
 
     const LocatedSend send = findDirectSendToBus(tr, bus);
     if (send.index < 0) return;
+    // Same target as the fader (twoWayTarget): where 2-Way drives the track
+    // fader, it drives the track pan, so the strip moves as one.
+    const int sendMode = static_cast<int>(
+        GetTrackSendInfo_Value(tr, send.category, send.index, "I_SENDMODE"));
+    if (twoWayTarget(mainBus >= 0, send.category == 1, sendMode == 0,
+                     mirroredRoutingCount_(tr)) == TwoWayTarget::TrackFader) {
+        // Forward sends track pan + output pan; solve for the track pan.
+        double trackPan = clamped
+            - GetTrackSendInfo_Value(tr, send.category, send.index, "D_PAN");
+        if (trackPan < -1.0) trackPan = -1.0;
+        if (trackPan >  1.0) trackPan =  1.0;
+        SetMediaTrackInfo_Value(tr, "D_PAN", trackPan);
+        return;
+    }
     // The bus balance we send forward is the composed track pan + send pan, so
     // invert that here: the send's own pan is the target minus the track pan.
     // Otherwise the forward path re-adds the track pan and the user's TotalMix
