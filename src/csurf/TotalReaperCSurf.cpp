@@ -1707,9 +1707,22 @@ TotalReaperCSurf::findDirectSendToBus(MediaTrack* source, int targetBus) {
     return {-1, -1};
 }
 
-std::size_t TotalReaperCSurf::mirroredRoutingCount_(MediaTrack* tr) const {
-    const auto it = states_.find(tr);
-    return it != states_.end() ? it->second.sendRoutings.size() : 0;
+std::size_t TotalReaperCSurf::hardwareRoutingCount_(MediaTrack* tr) const {
+    // ⛔ COUNTED FROM THE ROUTING, NOT FROM states_. The cached sendRoutings are
+    // empty while the track fader sits at -inf (updateTrackRouting skips the
+    // walk then), and that is exactly when a TotalMix move has to bring the
+    // fader back up. Counting from the cache made twoWayTarget fall through to
+    // the send path, which cannot recover a post-fader send from a -inf fader:
+    // TotalMix pulled to the bottom and back, REAPER never moved again
+    // (markyboard, Cockos forum 15.10.2026, OSC dump: RX with no TX). The walk
+    // lists every way to the hardware whatever the gain, muted sends excluded.
+    std::vector<WalkRouting> walked;
+    std::unordered_set<MediaTrack*> visited;
+    walkSendChain(tr, tr, 1.0, 0.0, false, visited, walked);
+    const int mainBus = resolveMainBusFromMaster();
+    std::size_t n = 0;
+    for (const auto& w : walked) if (w.bus != mainBus) ++n;
+    return n;
 }
 
 void TotalReaperCSurf::applyIncomingPreamp(int hwIdx, std::string extKey,
@@ -1778,7 +1791,7 @@ void TotalReaperCSurf::applyIncomingFader(int hwIdx, int bus, float db) {
     const int sendMode = static_cast<int>(
         GetTrackSendInfo_Value(tr, send.category, send.index, "I_SENDMODE"));
     if (twoWayTarget(mainBus >= 0, send.category == 1, sendMode == 0,
-                     mirroredRoutingCount_(tr)) == TwoWayTarget::TrackFader) {
+                     hardwareRoutingCount_(tr)) == TwoWayTarget::TrackFader) {
         // Forward sends fader * output volume; solve for the fader.
         const double outVol =
             GetTrackSendInfo_Value(tr, send.category, send.index, "D_VOL");
@@ -1834,7 +1847,7 @@ void TotalReaperCSurf::applyIncomingBalpan(int hwIdx, int bus, float balpan) {
     const int sendMode = static_cast<int>(
         GetTrackSendInfo_Value(tr, send.category, send.index, "I_SENDMODE"));
     if (twoWayTarget(mainBus >= 0, send.category == 1, sendMode == 0,
-                     mirroredRoutingCount_(tr)) == TwoWayTarget::TrackFader) {
+                     hardwareRoutingCount_(tr)) == TwoWayTarget::TrackFader) {
         // Forward sends track pan + output pan; solve for the track pan.
         double trackPan = clamped
             - GetTrackSendInfo_Value(tr, send.category, send.index, "D_PAN");
