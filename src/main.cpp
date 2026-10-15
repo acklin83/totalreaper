@@ -287,6 +287,12 @@ REAPER_PLUGIN_DLL_EXPORT int ReaperPluginEntry(REAPER_PLUGIN_HINSTANCE /*hInstan
             g_csurf->setOnlyMainSubmix(true);
         }
     }
+    if (HasExtState("TotalReaper", "KeepLiveInputOnPlayback")) {
+        const char* v = GetExtState("TotalReaper", "KeepLiveInputOnPlayback");
+        if (v && v[0] == '1') {
+            g_csurf->setKeepLiveInput(true);
+        }
+    }
     // Default on, so only an explicit "0" switches it off.
     if (HasExtState("TotalReaper", "SendOnlyChanges")) {
         const char* v = GetExtState("TotalReaper", "SendOnlyChanges");

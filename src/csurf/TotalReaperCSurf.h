@@ -120,6 +120,13 @@ public:
     void setOnlyMainSubmix(bool enabled);
     bool isOnlyMainSubmix() const noexcept { return onlyMainSubmix_.load(); }
 
+    // Keep the live input open during playback (default off): a tape-style
+    // track keeps its TotalMix input open while REAPER plays the take, so you
+    // hear both. Off, the input closes during playback as in 0.2.7. See
+    // totalMixOpen in the .cpp. Persisted in ExtState.
+    void setKeepLiveInput(bool enabled);
+    bool isKeepLiveInput() const noexcept { return keepLiveInput_.load(); }
+
     // Send only changes (default on): a routing value goes to TotalMix when it
     // differs from the last one sent, and everything again once a second. Off
     // is the behaviour up to 0.2.7, every value on every Run() tick. See
@@ -269,6 +276,8 @@ private:
         // value B_MAINSEND had before we set it to 0 — restored on disengage.
         // Overriding silences REAPER's software monitor so the user doesn't
         // hear the input doubled (TotalMix direct + REAPER through-the-DAW).
+        // Also kept in the track (P_EXT:totalreaper_mainsend) so a saved and
+        // reloaded project can still be restored; see holdMasterSend_.
         int savedMainSend = -1;
 
         // Routings to non-main buses, derived from this track's audio sends.
@@ -321,6 +330,20 @@ private:
     // other tracks sharing the input are skipped so we don't get
     // last-write-wins jitter or ambiguous mute semantics.
     bool isPrimaryOwnerForHwIdx_(MediaTrack* tr, int hwIdx);
+
+    // Is the TotalMix input open for this track right now (totalMixOpen:
+    // REAPER hears the input, or the live input is kept for playback)?
+    bool opensInputNow_(MediaTrack* tr, int recMon) const;
+
+    // Master send off while REAPER plays the input, original remembered in
+    // the state and in the track; and back on again. release with a null
+    // state restores whatever a saved session left in the track.
+    void holdMasterSend_(MediaTrack* tr, TrackState& state);
+    void releaseMasterSend_(MediaTrack* tr, TrackState* state);
+    // Restore every live track's master send we turned off. Mirror disable,
+    // and once a second while the mirror is off.
+    void releaseLeftoverMasterSends_();
+    int leftoverSweepTick_ = 0;
 
     // A send located on a source track for the 2-way write-back path:
     // which category (0 = track→track, 1 = direct hardware output) and its
@@ -402,6 +425,7 @@ private:
     std::atomic<bool> stereoPairLink_{false};      // link REAPER stereo inputs in TotalMix
     std::atomic<bool> onlyMainSubmix_{false};      // write the master's bus, leave the rest alone
     std::atomic<bool> sendOnlyChanges_{true};      // unchanged values only with the 1 s refresh
+    std::atomic<bool> keepLiveInput_{false};       // tape style: input stays open during playback
 
     // Left hardware channels we've already sent a stereo-link for, so we don't
     // re-send every tick. Cleared on mirror-disable and on link-off. Written

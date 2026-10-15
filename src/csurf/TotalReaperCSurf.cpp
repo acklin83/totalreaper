@@ -14,6 +14,7 @@
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <unordered_map>
 #include <unordered_set>
@@ -145,6 +146,10 @@ static_assert(twoWayTarget(false, false, true, 1) == TwoWayTarget::Send,
 // 11.10.2026: one second until TotalMix is set back is fine.
 constexpr int kRefreshAllMs = 1000;
 
+// How often Run() looks for master sends left off by a saved session while
+// the mirror is off (releaseLeftoverMasterSends_): about once a second.
+constexpr int kLeftoverSweepTicks = 33;
+
 // Does this flush send everything staged, changed or not? Always with the
 // option off (the 0.2.7 behaviour), and with it on when the refresh is due or
 // a full flush was asked for (stereo-link reset, snapshot load, port change).
@@ -259,6 +264,59 @@ static_assert(hearsInput(2, 3, false), "tape style: paused hears the input");
 static_assert(hearsInput(2, 5, true), "tape style: inside the punch hears the input");
 static_assert(!hearsInput(2, 5, false), "tape style: outside the punch is the take");
 static_assert(hearsInput(2, 7, false), "tape style: paused recording hears the input");
+
+// ⛔ TWO QUESTIONS, NOT ONE (15.10.2026). Up to 0.2.9 "REAPER hears the input"
+// decided both whether the TotalMix input is open and whether the track's
+// master send is off, so the last take was only audible with the whole mirror
+// switched off (Frank). The master send only has to be off while REAPER itself
+// plays the input — otherwise you hear it twice, once late. In tape style
+// during playback REAPER plays the take instead, so the send stays on and the
+// take is heard. "Keep the live input open during playback" then holds the
+// TotalMix input open in that phase as well: take from REAPER, musician live
+// from TotalMix, nothing doubled. Off, the input closes as in 0.2.7. Rec-arm
+// plays no part in either answer: monitoring is monitoring (Frank, 08.10.2026).
+constexpr bool totalMixOpen(int recMon, bool reaperHears, bool keepLive) {
+    return recMon != kRecMonOff && (reaperHears || keepLive);
+}
+constexpr bool masterSendOff(bool open, bool reaperHears) {
+    return open && reaperHears;
+}
+static_assert(totalMixOpen(2, hearsInput(2, 1, true), true)
+              && !masterSendOff(true, hearsInput(2, 1, true)),
+              "tape, playback, live kept: input open, take audible");
+static_assert(!totalMixOpen(2, hearsInput(2, 1, true), false),
+              "tape, playback, option off: input closed as in 0.2.7");
+static_assert(totalMixOpen(2, hearsInput(2, 5, false), true)
+              && !masterSendOff(true, hearsInput(2, 5, false)),
+              "tape, recording outside the punch, live kept: take audible too");
+static_assert(masterSendOff(totalMixOpen(2, hearsInput(2, 0, true), true),
+                            hearsInput(2, 0, true)),
+              "tape, stopped: REAPER plays the input, so the send is off");
+static_assert(masterSendOff(totalMixOpen(1, hearsInput(1, 1, true), false),
+                            hearsInput(1, 1, true)),
+              "normal monitoring: REAPER plays the input, the send is off");
+static_assert(!totalMixOpen(0, hearsInput(0, 0, true), true),
+              "monitoring off: the option opens nothing");
+
+// The track's master send as it was before TotalReaper turned it off, kept in
+// the track so it survives a save and a reload. Up to 0.2.9 it lived only in
+// memory: a project saved while mirroring (autosave is enough) came back with
+// the master send off and nothing left to restore it, so the take stayed
+// silent in tape-style playback. -1: nothing stored.
+constexpr const char* kExtMainSend = "P_EXT:totalreaper_mainsend";
+int storedMainSend(MediaTrack* tr) {
+    char buf[16] = "";
+    if (!GetSetMediaTrackInfo_String(tr, kExtMainSend, buf, false)) return -1;
+    return buf[0] != '\0' ? std::atoi(buf) : -1;
+}
+void storeMainSend(MediaTrack* tr, int value) {
+    char buf[16];
+    std::snprintf(buf, sizeof(buf), "%d", value);
+    GetSetMediaTrackInfo_String(tr, kExtMainSend, buf, true);
+}
+void clearMainSend(MediaTrack* tr) {
+    GetSetMediaTrackInfo_String(tr, kExtMainSend, const_cast<char*>(""), true);
+}
 
 // REAPER's record-mode actions (Options > Record mode). The three are a radio
 // group; the checked one is the active record mode. If REAPER reports no
@@ -451,11 +509,11 @@ void TotalReaperCSurf::setEnabled(bool enabled) {
             for (const auto& r : state.sendRoutings) {
                 pushInputRouting(state.recInput, r.bus, kMinusInfDb, 0, 0, false);
             }
-            if (state.savedMainSend != -1) {
-                SetMediaTrackInfo_Value(tr, "B_MAINSEND",
-                                        static_cast<double>(state.savedMainSend));
-            }
         }
+        // Master sends back through the project's live tracks only: states_
+        // can hold a deleted track's pointer, and writing to that is not safe.
+        // The same walk catches tracks left over from a saved session.
+        releaseLeftoverMasterSends_();
         states_.clear();
         stereoLinked_.clear();
         { std::lock_guard<std::mutex> g(rxMu_); lastSentWidth_.clear(); }
@@ -487,7 +545,7 @@ void TotalReaperCSurf::setEnabled(bool enabled) {
         const bool muted = GetMediaTrackInfo_Value(tr, "B_MUTE") != 0;
         const int hwIdx = hwStartChannel(recInput);
         // Same gate processTrack uses — see comment there.
-        if (!hearsInputNow(tr, recMon) || muted || hwIdx < 0) continue;
+        if (!opensInputNow_(tr, recMon) || muted || hwIdx < 0) continue;
         if (!isPrimaryOwnerForHwIdx_(tr, hwIdx)) continue;
         updateTrackRouting(tr);
     }
@@ -604,7 +662,15 @@ void TotalReaperCSurf::Run() {
     // Also before the gate: the settings window shows the hint either way.
     recheckAnswer_();
 
-    if (!enabled_.load()) return;
+    if (!enabled_.load()) {
+        // A project saved while mirroring, opened with the mirror off, still
+        // has master sends we turned off. Once a second is plenty for that.
+        if (++leftoverSweepTick_ >= kLeftoverSweepTicks) {
+            leftoverSweepTick_ = 0;
+            releaseLeftoverMasterSends_();
+        }
+        return;
+    }
     const int trackCount = CountTracks(nullptr);
     for (int i = 0; i < trackCount; ++i) {
         processTrack(GetTrack(nullptr, i));
@@ -772,6 +838,52 @@ void TotalReaperCSurf::scheduleAfter(int delayMs,
     });
 }
 
+bool TotalReaperCSurf::opensInputNow_(MediaTrack* tr, int recMon) const {
+    return totalMixOpen(recMon, hearsInputNow(tr, recMon), keepLiveInput_.load());
+}
+
+void TotalReaperCSurf::holdMasterSend_(MediaTrack* tr, TrackState& state) {
+    const int current = static_cast<int>(GetMediaTrackInfo_Value(tr, "B_MAINSEND"));
+    if (state.savedMainSend == -1) {
+        // Stored by an earlier session that saved the project with the send
+        // off? Then that is the original, not the 0 we see now.
+        const int stored = storedMainSend(tr);
+        if (stored != -1) {
+            state.savedMainSend = stored;
+        } else if (current != 0) {
+            state.savedMainSend = current;
+            storeMainSend(tr, current);
+        }
+    }
+    if (current != 0) SetMediaTrackInfo_Value(tr, "B_MAINSEND", 0.0);
+}
+
+void TotalReaperCSurf::releaseMasterSend_(MediaTrack* tr, TrackState* state) {
+    int saved = state != nullptr ? state->savedMainSend : -1;
+    if (saved == -1) saved = storedMainSend(tr);
+    if (saved == -1) return;
+    SetMediaTrackInfo_Value(tr, "B_MAINSEND", static_cast<double>(saved));
+    clearMainSend(tr);
+    if (state != nullptr) state->savedMainSend = -1;
+}
+
+void TotalReaperCSurf::releaseLeftoverMasterSends_() {
+    const int trackCount = CountTracks(nullptr);
+    for (int i = 0; i < trackCount; ++i) {
+        MediaTrack* tr = GetTrack(nullptr, i);
+        if (tr == nullptr) continue;
+        auto it = states_.find(tr);
+        releaseMasterSend_(tr, it != states_.end() ? &it->second : nullptr);
+    }
+}
+
+void TotalReaperCSurf::setKeepLiveInput(bool enabled) {
+    if (enabled == keepLiveInput_.load()) return;
+    keepLiveInput_.store(enabled);
+    SetExtState("TotalReaper", "KeepLiveInputOnPlayback", enabled ? "1" : "0",
+                /*persist*/ true);
+}
+
 bool TotalReaperCSurf::isPrimaryOwnerForHwIdx_(MediaTrack* tr, int hwIdx) {
     if (hwIdx < 0 || tr == nullptr) return false;
     const int trackCount = CountTracks(nullptr);
@@ -783,7 +895,7 @@ bool TotalReaperCSurf::isPrimaryOwnerForHwIdx_(MediaTrack* tr, int hwIdx) {
         const int rIn = static_cast<int>(GetMediaTrackInfo_Value(t, "I_RECINPUT"));
         if (hwStartChannel(rIn) != hwIdx) continue;
         const int rMon = static_cast<int>(GetMediaTrackInfo_Value(t, "I_RECMON"));
-        if (!hearsInputNow(t, rMon)) continue;
+        if (!opensInputNow_(t, rMon)) continue;
         const int rArm = static_cast<int>(GetMediaTrackInfo_Value(t, "I_RECARM"));
         if (rArm != 0) {
             if (armedPrimary == nullptr) armedPrimary = t;
@@ -807,9 +919,10 @@ void TotalReaperCSurf::processTrack(MediaTrack* tr) {
     const int hwIdx = hwStartChannel(recInput);
     // "currently active" gate:
     //   1. Valid hardware input (excludes MIDI / multichannel / no input).
-    //   2. REAPER hears the input right now (hearsInput — tape style drops
-    //      out during playback). Run() re-evaluates every tick, so a
-    //      transport change opens or closes the input on its own.
+    //   2. The TotalMix input is open right now (opensInputNow_: REAPER
+    //      hears the input — tape style drops out during playback — or the
+    //      live input is kept for playback). Run() re-evaluates every tick, so
+    //      a transport change opens or closes the input on its own.
     //      Rec-arm is deliberately not required: monitoring is monitoring,
     //      armed or not (Frank, 08.10.2026).
     //   3. This track is the elected primary owner for its hwIdx — see
@@ -820,7 +933,7 @@ void TotalReaperCSurf::processTrack(MediaTrack* tr) {
     //   4. Not channel-muted — REAPER's mute button should silence the
     //      matrix cells we own for this input.
     const bool currActive = (hwIdx >= 0
-                          && hearsInputNow(tr, recMon)
+                          && opensInputNow_(tr, recMon)
                           && !trackMuted
                           && isPrimaryOwnerForHwIdx_(tr, hwIdx));
 
@@ -831,7 +944,11 @@ void TotalReaperCSurf::processTrack(MediaTrack* tr) {
     // arrive with default inputs (e.g. MADI 1 on Frank's UFX+) and would
     // otherwise immediately push -∞ to that channel, overwriting whatever
     // an actually-monitoring track is putting there.
-    if (!wasTracked && !currActive) return;
+    if (!wasTracked && !currActive) {
+        // A track turned off by a saved session gets its master send back.
+        releaseMasterSend_(tr, nullptr);
+        return;
+    }
 
     // Note: the scalar "no-change" shortcut from earlier versions is gone.
     // Send routings depend on other tracks' faders / sends, which can change
@@ -902,11 +1019,8 @@ void TotalReaperCSurf::processTrack(MediaTrack* tr) {
                 pushInputRouting(it->second.recInput, r.bus,
                                  kMinusInfDb, 0, 0, false);
             }
-            if (it->second.savedMainSend != -1) {
-                SetMediaTrackInfo_Value(tr, "B_MAINSEND",
-                    static_cast<double>(it->second.savedMainSend));
-            }
         }
+        releaseMasterSend_(tr, wasTracked ? &it->second : nullptr);
         states_.erase(tr);
     }
 }
@@ -930,33 +1044,28 @@ void TotalReaperCSurf::updateTrackRouting(MediaTrack* tr) {
     const double dualPanR = GetMediaTrackInfo_Value(tr, "D_DUALPANR");
     const int panMode = static_cast<int>(GetMediaTrackInfo_Value(tr, "I_PANMODE"));
 
+    // Two answers (totalMixOpen / masterSendOff): is the TotalMix input open,
+    // and does REAPER itself play the input right now.
+    const bool reaperHears = hearsInputNow(tr, recMon);
     const float mainDb =
-        hearsInputNow(tr, recMon) ? linToClampedDb(linVol) : kMinusInfDb;
+        totalMixOpen(recMon, reaperHears, keepLiveInput_.load())
+            ? linToClampedDb(linVol) : kMinusInfDb;
     const bool nowActive = (mainDb > kMinusInfDb);
 
     // Mute REAPER's software monitor while we're driving the channel from
     // TotalMix — otherwise the user hears the input twice (TotalMix direct +
-    // REAPER through-the-DAW with buffer-size latency = comb filter).
+    // REAPER through-the-DAW with buffer-size latency = comb filter). Only
+    // while REAPER itself plays the input: in tape-style playback it plays the
+    // take, and the take must stay audible (masterSendOff).
     //
     // Enforce B_MAINSEND=0 on every tick (not just first activation): project
     // load, undo, automation, or another control surface can restore the main
-    // send behind our back. The cached savedMainSend captures the original
-    // value the first time we see it non-zero, so we can restore it on
-    // disengage.
+    // send behind our back.
     TrackState& state = states_[tr];
-    if (nowActive) {
-        const int currentMainSend = static_cast<int>(
-            GetMediaTrackInfo_Value(tr, "B_MAINSEND"));
-        if (state.savedMainSend == -1 && currentMainSend != 0) {
-            state.savedMainSend = currentMainSend;
-        }
-        if (currentMainSend != 0) {
-            SetMediaTrackInfo_Value(tr, "B_MAINSEND", 0.0);
-        }
-    } else if (state.savedMainSend != -1) {
-        SetMediaTrackInfo_Value(tr, "B_MAINSEND",
-                                static_cast<double>(state.savedMainSend));
-        state.savedMainSend = -1;
+    if (masterSendOff(nowActive, reaperHears)) {
+        holdMasterSend_(tr, state);
+    } else {
+        releaseMasterSend_(tr, &state);
     }
 
     state.recInput = recInput;

@@ -39,6 +39,14 @@ source of truth for the TotalMix input matrix:
   With auto-punch (time selection or selected items) the input opens only
   inside the punch region while recording: the take plays up to the
   punch-in, and you hear yourself from there.
+  With **Keep the live input open during playback** (settings window) the
+  input stays open in TotalMix during playback as well, while REAPER plays
+  the take: you hear the take and the musician live, without switching the
+  mirror off.
+- REAPER's own monitoring of a track is muted (its master send turned off)
+  only while REAPER itself plays the input, so a take that REAPER plays
+  stays audible. The original master send is stored in the track, so a
+  project saved while mirroring gets it back after reloading.
 - Stereo input tracks emit fader/pan/width for both halves of the pair.
 - Track-to-track sends → matrix routings to the destination bus, with
   per-send level/pan respected.
@@ -129,7 +137,8 @@ Global TotalMix controls and project-state recall:
   the ports (TotalMix does not answer, or answers without channel values)
   clears itself as soon as TotalMix does answer.
 - **Feature toggles** for Routing Mirror, Only Set Main Submix, 2-Way Control,
-  Auto-Talkback, Stereo-Pair Link and Send Only Changes. These stay in sync with the matching
+  Auto-Talkback, Stereo-Pair Link, Keep the Live Input Open During Playback
+  and Send Only Changes. These stay in sync with the matching
   actions and toolbar icons.
 
 Needs [ReaImGui](https://github.com/cfillion/reaimgui) (install via *Extensions

@@ -156,6 +156,15 @@ void drawContents() {
             "Stereo link is one-way: turning it off does not unlink existing "
             "pairs in TotalMix.");
 
+        bool keepLive = g_surf->isKeepLiveInput();
+        if (ImGui::Checkbox(g_ctx, "Keep the live input open during playback", &keepLive)) {
+            g_surf->setKeepLiveInput(keepLive);
+        }
+        ImGui::TextWrapped(g_ctx,
+            "For tracks on Monitor input (tape auto style): during playback "
+            "REAPER plays the take and TotalMix keeps the live input open, so "
+            "you hear both. Off, the input closes during playback.");
+
         bool onlyChanges = g_surf->isSendOnlyChanges();
         if (ImGui::Checkbox(g_ctx, "Send only changes", &onlyChanges)) {
             g_surf->setSendOnlyChanges(onlyChanges);
